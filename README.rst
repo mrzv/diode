@@ -8,7 +8,7 @@ dependence on CGAL).
 
 **Dependencies:**
 
-  * `CGAL <http://www.cgal.org/>`_
+* `CGAL <http://www.cgal.org/>`_
 
 Get, Build, Install
 -------------------
@@ -47,7 +47,7 @@ Usage
 
 See `examples/generate_alpha_shape.cpp <https://github.com/mrzv/diode/blob/master/examples/generate_alpha_shape.cpp>`_ for a C++ example.
 
-In Python, use `diode.fill_alpha_shapes(...)` to fill a list of simplices, together with their alpha values::
+In Python, use ``diode.fill_alpha_shapes(...)`` to fill a list of simplices, together with their alpha values::
 
     >>> import diode
     >>> import numpy as np
