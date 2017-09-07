@@ -1,7 +1,13 @@
 DioDe
 =====
 
+DioDe uses CGAL to generate alpha shapes filtrations in a format that Dionysus_
+understands. DioDe is not integrated into Dionysus_ because of licensing
+restrictions (Dionysus is under BSD, DioDe is under GPL because of its
+dependence on CGAL).
+
 **Dependencies:**
+
   * `CGAL <http://www.cgal.org/>`_
 
 Get, Build, Install
