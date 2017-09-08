@@ -76,10 +76,11 @@ struct AlphaShapeWrapper
     };
 
     template<class AddSimplex>
-    static void fill_filtration(const PointsMap& points_map, const AddSimplex& add_simplex)
+    static void fill_filtration(Delaunay& dt, const PointsMap& points_map, const AddSimplex& add_simplex)
     {
         auto points_range = points_map | boost::adaptors::map_keys;
-        AlphaShape as(std::begin(points_range), std::end(points_range), std::numeric_limits<FT>::infinity(), AlphaShape::GENERAL);
+        dt.insert(std::begin(points_range), std::end(points_range));
+        AlphaShape as(dt, std::numeric_limits<FT>::infinity(), AlphaShape::GENERAL);
         as.filtration_with_alpha_values(ASOutputIterator3<AddSimplex>(add_simplex, points_map));
     }
 };
@@ -112,7 +113,8 @@ diode::fill_alpha_shapes(const Points& points, const SimplexCallback& add_simple
         points_map[p] = i;
     }
 
-    ASWrapper::fill_filtration(points_map, add_simplex);
+    Delaunay dt;
+    ASWrapper::fill_filtration(dt, points_map, add_simplex);
 }
 
 template<class Points, class SimplexCallback>
@@ -139,6 +141,40 @@ diode::fill_weighted_alpha_shapes(const Points& points, const SimplexCallback& a
         points_map[p] = i;
     }
 
-    ASWrapper::fill_filtration(points_map, add_simplex);
+    Delaunay dt;
+    ASWrapper::fill_filtration(dt, points_map, add_simplex);
 }
 
+template<class Points, class SimplexCallback>
+void
+diode::fill_periodic_alpha_shapes(const Points& points, const SimplexCallback& add_simplex,
+                                  std::array<double, 3> from, std::array<double, 3> to)
+{
+    using K          = CGAL::Exact_predicates_inexact_constructions_kernel;
+    using PK         = CGAL::Periodic_3_Delaunay_triangulation_traits_3<K>;
+
+    using DsVb       = CGAL::Periodic_3_triangulation_ds_vertex_base_3<>;
+    using Vb         = CGAL::Triangulation_vertex_base_3<PK,DsVb>;
+    using AsVb       = CGAL::Alpha_shape_vertex_base_3<PK,Vb>;
+    using DsCb       = CGAL::Periodic_3_triangulation_ds_cell_base_3<>;
+    using Cb         = CGAL::Triangulation_cell_base_3<PK,DsCb>;
+    using AsCb       = CGAL::Alpha_shape_cell_base_3<PK,Cb>;
+    using TDS        = CGAL::Triangulation_data_structure_3<AsVb,AsCb>;
+    using Delaunay   = CGAL::Periodic_3_Delaunay_triangulation_3<PK,TDS>;
+
+    using ASWrapper  = detail::AlphaShapeWrapper<Delaunay>;
+    using PointsMap  = typename ASWrapper::PointsMap;
+    using AlphaShape = typename ASWrapper::AlphaShape;
+    using Vertex     = typename ASWrapper::Vertex;
+    using Point      = typename ASWrapper::Point;
+
+    PointsMap points_map;
+    for (Vertex i = 0; i < points.size(); ++i)
+    {
+        Point p(points(i,0), points(i,1), points(i,2));
+        points_map[p] = i;
+    }
+
+    Delaunay pdt(PK::Iso_cuboid_3(from[0], from[1], from[2], to[0], to[1], to[2]));
+    ASWrapper::fill_filtration(pdt, points_map, add_simplex);
+}
