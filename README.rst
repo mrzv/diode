@@ -46,7 +46,7 @@ Usage
 -----
 
 See `examples/generate_alpha_shape.cpp <https://github.com/mrzv/diode/blob/master/examples/generate_alpha_shape.cpp>`_ and
-See `examples/generate_weighted_alpha_shape.cpp <https://github.com/mrzv/diode/blob/master/examples/generate_weighted_alpha_shape.cpp>`_ for a C++ examples.
+`examples/generate_weighted_alpha_shape.cpp <https://github.com/mrzv/diode/blob/master/examples/generate_weighted_alpha_shape.cpp>`_ for C++ examples.
 
 In Python, use ``diode.fill_alpha_shapes(...)`` and ``diode.fill_weighted_alpha_shapes(...)`` to fill a list of simplices, together with their alpha values::
 
