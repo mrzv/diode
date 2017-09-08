@@ -8,6 +8,7 @@
 
 #include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
 #include <CGAL/Delaunay_triangulation_3.h>
+#include <CGAL/Regular_triangulation_3.h>
 #include <CGAL/Alpha_shape_3.h>
 
 namespace diode
@@ -15,6 +16,9 @@ namespace diode
 
 template<class Points, class SimplexCallback>
 void fill_alpha_shapes(const Points& points, const SimplexCallback& add_simplex);
+
+template<class Points, class SimplexCallback>
+void fill_weighted_alpha_shapes(const Points& points, const SimplexCallback& add_simplex);
 
 }
 

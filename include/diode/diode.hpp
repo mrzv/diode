@@ -3,13 +3,13 @@ namespace diode
 namespace detail
 {
 
-template<class Delaunay_, class Vertex_ = unsigned>
+template<class Delaunay_, class Point_ = typename Delaunay_::Point, class Vertex_ = unsigned>
 struct AlphaShapeWrapper
 {
     using Vertex     = Vertex_;
     using Delaunay   = Delaunay_;
     using AlphaShape = CGAL::Alpha_shape_3<Delaunay>;
-    using Point      = typename Delaunay::Point;
+    using Point      = Point_;
     using FT         = typename AlphaShape::FT;
     using PointsMap  = std::map<Point, Vertex>;
 
@@ -114,3 +114,31 @@ diode::fill_alpha_shapes(const Points& points, const SimplexCallback& add_simple
 
     ASWrapper::fill_filtration(points_map, add_simplex);
 }
+
+template<class Points, class SimplexCallback>
+void
+diode::fill_weighted_alpha_shapes(const Points& points, const SimplexCallback& add_simplex)
+{
+    using K         = CGAL::Exact_predicates_inexact_constructions_kernel;
+    using Gt        = CGAL::Regular_triangulation_euclidean_traits_3<K>;
+    using Vb        = CGAL::Alpha_shape_vertex_base_3<Gt>;
+    using Fb        = CGAL::Alpha_shape_cell_base_3<Gt>;
+    using TDS       = CGAL::Triangulation_data_structure_3<Vb,Fb>;
+    using Delaunay  = CGAL::Regular_triangulation_3<Gt,TDS>;
+
+    using ASWrapper     = detail::AlphaShapeWrapper<Delaunay, typename Delaunay::Weighted_point>;
+    using PointsMap     = typename ASWrapper::PointsMap;
+    using AlphaShape    = typename ASWrapper::AlphaShape;
+    using Vertex        = typename ASWrapper::Vertex;
+    using Point         = typename ASWrapper::Point;
+
+    PointsMap points_map;
+    for (Vertex i = 0; i < points.size(); ++i)
+    {
+        Point p({points(i,0), points(i,1), points(i,2)}, points(i,3));
+        points_map[p] = i;
+    }
+
+    ASWrapper::fill_filtration(points_map, add_simplex);
+}
+

@@ -62,6 +62,33 @@ fill_alpha_shape(py::array a)
         throw std::runtime_error("Can only handle 3D alpha shapes");
 }
 
+typename AddSimplex<void>::Simplices
+fill_weighted_alpha_shape(py::array a)
+{
+    if (a.ndim() != 2)
+        throw std::runtime_error("Unknown input dimension: can only process 2D arrays");
+
+    if (a.shape()[1] == 4)
+    {
+        if (a.dtype() == py::dtype::of<float>())
+        {
+            AddSimplex<float>::Simplices filtration;
+            diode::fill_weighted_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration));
+            return filtration;
+        }
+        else if (a.dtype() == py::dtype::of<double>())
+        {
+            AddSimplex<double>::Simplices filtration;
+            diode::fill_weighted_alpha_shapes(ArrayWrapper<double>(a), AddSimplex<double>(&filtration));
+            return filtration;
+        }
+        else
+            throw std::runtime_error("Unknown array dtype");
+    }
+    else
+        throw std::runtime_error("Can only handle 3D alpha shapes (input must be a 4-column array: coordinates + weight)");
+}
+
 PYBIND11_PLUGIN(diode)
 {
     py::module m("diode", "DioDe pythonn bindings");
@@ -70,6 +97,9 @@ PYBIND11_PLUGIN(diode)
     m.def("fill_alpha_shapes",  &fill_alpha_shape,
           "data"_a,
           "returns (sorted) alpha shape filtration of the input points");
+    m.def("fill_weighted_alpha_shapes",  &fill_weighted_alpha_shape,
+          "data"_a,
+          "returns (sorted) alpha shape filtration of the weighted input points");
 
     return m.ptr();
 }

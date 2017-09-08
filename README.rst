@@ -4,7 +4,7 @@ DioDe
 DioDe uses CGAL to generate alpha shapes filtrations in a format that Dionysus_
 understands. DioDe is not integrated into Dionysus_ because of licensing
 restrictions (Dionysus is under BSD, DioDe is under GPL because of its
-dependence on CGAL).
+dependence on CGAL). It supports both ordinary and weighted alpha shapes.
 
 **Dependencies:**
 
@@ -45,9 +45,10 @@ to your ``~/.bashrc`` or ``~/.zshrc``.
 Usage
 -----
 
-See `examples/generate_alpha_shape.cpp <https://github.com/mrzv/diode/blob/master/examples/generate_alpha_shape.cpp>`_ for a C++ example.
+See `examples/generate_alpha_shape.cpp <https://github.com/mrzv/diode/blob/master/examples/generate_alpha_shape.cpp>`_ and
+See `examples/generate_weighted_alpha_shape.cpp <https://github.com/mrzv/diode/blob/master/examples/generate_weighted_alpha_shape.cpp>`_ for a C++ examples.
 
-In Python, use ``diode.fill_alpha_shapes(...)`` to fill a list of simplices, together with their alpha values::
+In Python, use ``diode.fill_alpha_shapes(...)`` and ``diode.fill_weighted_alpha_shapes(...)`` to fill a list of simplices, together with their alpha values::
 
     >>> import diode
     >>> import numpy as np
@@ -67,6 +68,21 @@ In Python, use ``diode.fill_alpha_shapes(...)`` to fill a list of simplices, tog
       ([62L, 34L, 49L], 1933.2257381777533),
       ([62L, 91L, 49L], 1933.2257381777533),
       ([62L, 91L, 34L, 49L], 1933.2257381777533)]
+
+    >>> weighted_points = np.random.random((100,4))
+    >>> simplices2 = diode.fill_weighted_alpha_shapes(weighted_points)
+    >>> print(simplices2)
+    [([24L], -0.987214836816236),
+     ([35L], -0.968749877102265),
+     ([50L], -0.9673151804059413),
+     ([47L], -0.9640549893422644),
+     ([71L], -0.9639978806827709),
+     ([24L, 50L], -0.9540965704765515),
+     ...
+     ([54L, 10L], 29223.611044169364),
+     ([10L, 54L, 43L], 29223.611044169364),
+     ([13L, 10L, 54L], 29223.611044169364),
+     ([13L, 10L, 54L, 43L], 29223.611044169364)]
 
 The list can be passed to Dionysus_ to initialize a filtration::
 
