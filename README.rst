@@ -92,10 +92,10 @@ The list can be passed to Dionysus_ to initialize a filtration::
     Filtration with 2287 simplices
 
 DioDe also includes ``diode.fill_periodic_alpha_shapes(...)``, which generates
-the alpha shape for a point set on a periodic domain (by default a ``[0,0,0]
-- [1,1,1]`` cube with periodic boundary conditions). For some reason, in the
-periodic case, CGAL reports each simplex many times over. However, passing the
-result to ``dionysus.Filtration`` takes care of the duplicates::
+the alpha shape for a point set on a periodic cube (by default ``[0,0,0]
+- [1,1,1]``). In the periodic case, CGAL reports each simplex many times over.
+However, passing the result to ``dionysus.Filtration`` takes care of the
+duplicates::
 
     >>> simplices_periodic = diode.fill_periodic_alpha_shapes(points)
     >>> print(len(simplices_periodic))
