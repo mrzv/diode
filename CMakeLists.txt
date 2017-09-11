@@ -14,6 +14,11 @@ include                     (${CGAL_USE_FILE})
 add_definitions             (${CGAL_CXX_FLAGS_INIT})
 include_directories         (${CGAL_INCLUDE_DIRS})
 
+# CGAL 4.9.1 removes -O3 from the release flags. I want it back.
+if                          (${CMAKE_BUILD_TYPE} STREQUAL "Release")
+    set                     (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
+endif                       ()
+
 set                         (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
 
 add_subdirectory            (examples)
