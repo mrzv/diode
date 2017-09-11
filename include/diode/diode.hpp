@@ -78,8 +78,6 @@ struct AlphaShapeWrapper
     template<class AddSimplex>
     static void fill_filtration(Delaunay& dt, const PointsMap& points_map, const AddSimplex& add_simplex)
     {
-        auto points_range = points_map | boost::adaptors::map_keys;
-        dt.insert(std::begin(points_range), std::end(points_range));
         AlphaShape as(dt, std::numeric_limits<FT>::infinity(), AlphaShape::GENERAL);
         as.filtration_with_alpha_values(ASOutputIterator3<AddSimplex>(add_simplex, points_map));
     }
@@ -113,7 +111,8 @@ diode::fill_alpha_shapes(const Points& points, const SimplexCallback& add_simple
         points_map[p] = i;
     }
 
-    Delaunay dt;
+    auto points_range = points_map | boost::adaptors::map_keys;
+    Delaunay dt(std::begin(points_range), std::end(points_range));
     ASWrapper::fill_filtration(dt, points_map, add_simplex);
 }
 
@@ -141,7 +140,8 @@ diode::fill_weighted_alpha_shapes(const Points& points, const SimplexCallback& a
         points_map[p] = i;
     }
 
-    Delaunay dt;
+    auto points_range = points_map | boost::adaptors::map_keys;
+    Delaunay dt(std::begin(points_range), std::end(points_range));
     ASWrapper::fill_filtration(dt, points_map, add_simplex);
 }
 
@@ -176,5 +176,9 @@ diode::fill_periodic_alpha_shapes(const Points& points, const SimplexCallback& a
     }
 
     Delaunay pdt(PK::Iso_cuboid_3(from[0], from[1], from[2], to[0], to[1], to[2]));
+    auto points_range = points_map | boost::adaptors::map_keys;
+    pdt.insert(std::begin(points_range), std::end(points_range), true);
+    if (pdt.is_triangulation_in_1_sheet())
+        pdt.convert_to_1_sheeted_covering();
     ASWrapper::fill_filtration(pdt, points_map, add_simplex);
 }
