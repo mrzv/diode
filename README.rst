@@ -115,5 +115,5 @@ simplex multiple times. However, passing the result to
     <18,64,65,79> 0.0715833
     <18,65,79,99> 0.0725366
 
-.. _Dionysus:   http://mrzv.org/software/dionysus
+.. _Dionysus:   http://mrzv.org/software/dionysus2
 
