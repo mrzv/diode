@@ -181,5 +181,50 @@ diode::fill_periodic_alpha_shapes(const Points& points, const SimplexCallback& a
     pdt.insert(std::begin(points_range), std::end(points_range), true);
     if (pdt.is_triangulation_in_1_sheet())
         pdt.convert_to_1_sheeted_covering();
+    else
+        throw std::runtime_error("Cannot convert to 1-sheeted covering");
     ASWrapper::fill_filtration(pdt, points_map, add_simplex);
 }
+
+#if CGAL_VERSION_MAJOR >= 4 && CGAL_VERSION_MINOR >= 11
+template<class Points, class SimplexCallback>
+void
+diode::fill_weighted_periodic_alpha_shapes(const Points& points, const SimplexCallback& add_simplex,
+                                           std::array<double, 3> from, std::array<double, 3> to)
+{
+    using K          = CGAL::Exact_predicates_inexact_constructions_kernel;
+    using PK         = CGAL::Periodic_3_regular_triangulation_traits_3<K>;
+
+    using DsVb       = CGAL::Periodic_3_triangulation_ds_vertex_base_3<>;
+    using Vb         = CGAL::Regular_triangulation_vertex_base_3<PK,DsVb>;
+    using AsVb       = CGAL::Alpha_shape_vertex_base_3<PK,Vb>;
+    using DsCb       = CGAL::Periodic_3_triangulation_ds_cell_base_3<>;
+    using Cb         = CGAL::Regular_triangulation_cell_base_3<PK,DsCb>;
+    using AsCb       = CGAL::Alpha_shape_cell_base_3<PK,Cb>;
+    using TDS        = CGAL::Triangulation_data_structure_3<AsVb,AsCb>;
+    using Delaunay   = CGAL::Periodic_3_regular_triangulation_3<PK,TDS>;
+
+    using ASWrapper  = detail::AlphaShapeWrapper<Delaunay>;
+    using PointsMap  = typename ASWrapper::PointsMap;
+    using AlphaShape = typename ASWrapper::AlphaShape;
+    using Vertex     = typename ASWrapper::Vertex;
+    using Point      = typename ASWrapper::Point;
+
+    PointsMap points_map;
+    for (Vertex i = 0; i < points.size(); ++i)
+    {
+        Point p({points(i,0), points(i,1), points(i,2)}, points(i,3));
+        points_map[p] = i;
+    }
+
+    Delaunay pdt(PK::Iso_cuboid_3(from[0], from[1], from[2], to[0], to[1], to[2]));
+    auto points_range = points_map | boost::adaptors::map_keys;
+    pdt.insert(std::begin(points_range), std::end(points_range), true);
+    if (pdt.is_triangulation_in_1_sheet())
+        pdt.convert_to_1_sheeted_covering();
+    else
+        throw std::runtime_error("Cannot convert to 1-sheeted covering");
+    ASWrapper::fill_filtration(pdt, points_map, add_simplex);
+}
+#endif
+

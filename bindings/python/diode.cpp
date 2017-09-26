@@ -115,6 +115,37 @@ fill_periodic_alpha_shape(py::array a, std::array<double,3> from, std::array<dou
     else
         throw std::runtime_error("Can only handle 3D alpha shapes");
 }
+
+#if CGAL_VERSION_MAJOR >= 4 && CGAL_VERSION_MINOR >= 11
+typename AddSimplex<void>::Simplices
+fill_weighted_periodic_alpha_shape(py::array a, std::array<double,3> from, std::array<double,3> to)
+{
+    if (a.ndim() != 2)
+        throw std::runtime_error("Unknown input dimension: can only process 2D arrays");
+
+    if (a.shape()[1] == 4)
+    {
+        if (a.dtype() == py::dtype::of<float>())
+        {
+            AddSimplex<float>::Simplices filtration;
+            diode::fill_weighted_periodic_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration), from, to);
+            return filtration;
+        }
+        else if (a.dtype() == py::dtype::of<double>())
+        {
+            AddSimplex<double>::Simplices filtration;
+            diode::fill_weighted_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex<double>(&filtration), from, to);
+            return filtration;
+        }
+        else
+            throw std::runtime_error("Unknown array dtype");
+    }
+    else
+        throw std::runtime_error("Can only handle 3D alpha shapes");
+}
+#endif
+
+
 PYBIND11_PLUGIN(diode)
 {
     py::module m("diode", "DioDe pythonn bindings");
@@ -131,6 +162,13 @@ PYBIND11_PLUGIN(diode)
           "from"_a = std::array<double,3> {0.,0.,0.},
           "to"_a   = std::array<double,3> {1.,1.,1.},
           "returns (sorted) alpha shape filtration of the input points on a periodic domain");
+#if CGAL_VERSION_MAJOR >= 4 && CGAL_VERSION_MINOR >= 11
+    m.def("fill_weighted_periodic_alpha_shapes",  &fill_weighted_periodic_alpha_shape,
+          "data"_a,
+          "from"_a = std::array<double,3> {0.,0.,0.},
+          "to"_a   = std::array<double,3> {1.,1.,1.},
+          "returns (sorted) alpha shape filtration of the weighted input points on a periodic domain");
+#endif
 
     return m.ptr();
 }
