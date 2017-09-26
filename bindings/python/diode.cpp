@@ -116,7 +116,7 @@ fill_periodic_alpha_shape(py::array a, std::array<double,3> from, std::array<dou
         throw std::runtime_error("Can only handle 3D alpha shapes");
 }
 
-#if CGAL_VERSION_MAJOR >= 4 && CGAL_VERSION_MINOR >= 11
+#if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
 typename AddSimplex<void>::Simplices
 fill_weighted_periodic_alpha_shape(py::array a, std::array<double,3> from, std::array<double,3> to)
 {
@@ -162,7 +162,7 @@ PYBIND11_PLUGIN(diode)
           "from"_a = std::array<double,3> {0.,0.,0.},
           "to"_a   = std::array<double,3> {1.,1.,1.},
           "returns (sorted) alpha shape filtration of the input points on a periodic domain");
-#if CGAL_VERSION_MAJOR >= 4 && CGAL_VERSION_MINOR >= 11
+#if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
     m.def("fill_weighted_periodic_alpha_shapes",  &fill_weighted_periodic_alpha_shape,
           "data"_a,
           "from"_a = std::array<double,3> {0.,0.,0.},

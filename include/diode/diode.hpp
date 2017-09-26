@@ -186,7 +186,7 @@ diode::fill_periodic_alpha_shapes(const Points& points, const SimplexCallback& a
     ASWrapper::fill_filtration(pdt, points_map, add_simplex);
 }
 
-#if CGAL_VERSION_MAJOR >= 4 && CGAL_VERSION_MINOR >= 11
+#if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
 template<class Points, class SimplexCallback>
 void
 diode::fill_weighted_periodic_alpha_shapes(const Points& points, const SimplexCallback& add_simplex,
