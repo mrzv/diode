@@ -121,11 +121,12 @@ void
 diode::fill_weighted_alpha_shapes(const Points& points, const SimplexCallback& add_simplex)
 {
     using K         = CGAL::Exact_predicates_inexact_constructions_kernel;
-    using Gt        = CGAL::Regular_triangulation_euclidean_traits_3<K>;
-    using Vb        = CGAL::Alpha_shape_vertex_base_3<Gt>;
-    using Fb        = CGAL::Alpha_shape_cell_base_3<Gt>;
-    using TDS       = CGAL::Triangulation_data_structure_3<Vb,Fb>;
-    using Delaunay  = CGAL::Regular_triangulation_3<Gt,TDS>;
+    using Rvb       = CGAL::Regular_triangulation_vertex_base_3<K>;
+    using Vb        = CGAL::Alpha_shape_vertex_base_3<K, Rvb>;
+    using Rcb       = CGAL::Regular_triangulation_cell_base_3<K>;
+    using Cb        = CGAL::Alpha_shape_cell_base_3<K, Rcb>;
+    using TDS       = CGAL::Triangulation_data_structure_3<Vb,Cb>;
+    using Delaunay  = CGAL::Regular_triangulation_3<K,TDS>;
 
     using ASWrapper     = detail::AlphaShapeWrapper<Delaunay, typename Delaunay::Weighted_point>;
     using PointsMap     = typename ASWrapper::PointsMap;
