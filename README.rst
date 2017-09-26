@@ -117,3 +117,10 @@ simplex multiple times. However, passing the result to
 
 .. _Dionysus:   http://mrzv.org/software/dionysus2
 
+When using CGAL version at least 4.11, DioDe includes
+``diode.fill_weighted_periodic_alpha_shapes(...)``, which generates the alpha
+shape for a weighted point set on a periodic cube::
+
+    >>> weighted_points[:,3] /= 64
+    >>> simplices_weighted_periodic = diode.fill_weighted_periodic_alpha_shapes(weighted_points)
+
