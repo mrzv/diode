@@ -1,3 +1,5 @@
+#include <sstream>
+
 namespace diode
 {
 namespace detail
@@ -209,11 +211,27 @@ diode::fill_weighted_periodic_alpha_shapes(const Points& points, const SimplexCa
     using AlphaShape = typename ASWrapper::AlphaShape;
     using Vertex     = typename ASWrapper::Vertex;
     using Point      = typename ASWrapper::Point;
+    using FT         = typename ASWrapper::FT;
+
+    auto domain_size = to[0] - from[0];
+    auto upper_bound = FT(0.015625) * domain_size * domain_size;
 
     PointsMap points_map;
     for (Vertex i = 0; i < points.size(); ++i)
     {
-        Point p({points(i,0), points(i,1), points(i,2)}, points(i,3));
+        auto x = points(i,0);
+        auto y = points(i,1);
+        auto z = points(i,2);
+        auto w = points(i,3);
+        if (w < 0 || w >= upper_bound)
+        {
+            std::ostringstream oss;
+            oss << "Point weight w must satisfy: 0 <= w < 1/64 * domain_size * domain_size; but got point"
+                << " (" << x << ", " << y << ", " << z << ") weight = " << w;
+            throw std::runtime_error(oss.str());
+        }
+
+        Point p({x,y,z}, w);
         points_map[p] = i;
     }
 
