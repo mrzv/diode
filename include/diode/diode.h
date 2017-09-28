@@ -11,10 +11,15 @@
 #include <CGAL/Regular_triangulation_3.h>
 #include <CGAL/Periodic_3_Delaunay_triangulation_traits_3.h>
 #include <CGAL/Periodic_3_Delaunay_triangulation_3.h>
+#include <CGAL/Alpha_shape_3.h>
+
+#include <CGAL/version_macros.h>
+
+#if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
 #include <CGAL/Periodic_3_regular_triangulation_traits_3.h>
 #include <CGAL/Periodic_3_regular_triangulation_3.h>
-#include <CGAL/Alpha_shape_3.h>
-#include <CGAL/version_macros.h>
+#endif
+
 
 namespace diode
 {
