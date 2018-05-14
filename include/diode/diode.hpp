@@ -1,4 +1,5 @@
 #include <sstream>
+#include <CGAL/Alpha_shape_vertex_base_3.h>
 
 namespace diode
 {
