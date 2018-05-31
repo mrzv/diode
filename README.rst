@@ -13,7 +13,7 @@ dependence on CGAL). It supports both ordinary and weighted alpha shapes.
 Get, Build, Install
 -------------------
 
-The simplest way to install Dionysus as a Python package:
+The simplest way to install Diode as a Python package:
 
 .. parsed-literal::
 
