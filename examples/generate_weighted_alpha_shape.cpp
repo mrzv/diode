@@ -58,6 +58,6 @@ int main(int argc, char** argv)
     Points points = read_points(argv[1]);
 
     // generate the alpha shape
-    diode::fill_weighted_alpha_shapes(points, OutputSimplex());
+    diode::AlphaShapes<>::fill_weighted_alpha_shapes(points, OutputSimplex());
 }
 

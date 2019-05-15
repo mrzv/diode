@@ -105,9 +105,11 @@ struct AlphaShapeWrapper
 }   // detail
 }   // diode
 
-template<class Points, class SimplexCallback, bool exact>
+template<bool exact>
+template<class Points, class SimplexCallback>
 void
-diode::fill_alpha_shapes(const Points& points, const SimplexCallback& add_simplex)
+diode::AlphaShapes<exact>::
+fill_alpha_shapes(const Points& points, const SimplexCallback& add_simplex)
 {
     using K          = detail::Kernel<exact>;
     using Vb         = CGAL::Alpha_shape_vertex_base_3<K>;
@@ -133,9 +135,11 @@ diode::fill_alpha_shapes(const Points& points, const SimplexCallback& add_simple
     ASWrapper::fill_filtration(dt, points_map, add_simplex);
 }
 
-template<class Points, class SimplexCallback, bool exact>
+template<bool exact>
+template<class Points, class SimplexCallback>
 void
-diode::fill_weighted_alpha_shapes(const Points& points, const SimplexCallback& add_simplex)
+diode::AlphaShapes<exact>::
+fill_weighted_alpha_shapes(const Points& points, const SimplexCallback& add_simplex)
 {
     using K         = detail::Kernel<exact>;
 
@@ -172,10 +176,12 @@ diode::fill_weighted_alpha_shapes(const Points& points, const SimplexCallback& a
     ASWrapper::fill_filtration(dt, points_map, add_simplex);
 }
 
-template<class Points, class SimplexCallback, bool exact>
+template<bool exact>
+template<class Points, class SimplexCallback>
 void
-diode::fill_periodic_alpha_shapes(const Points& points, const SimplexCallback& add_simplex,
-                                  std::array<double, 3> from, std::array<double, 3> to)
+diode::AlphaShapes<exact>::
+fill_periodic_alpha_shapes(const Points& points, const SimplexCallback& add_simplex,
+                           std::array<double, 3> from, std::array<double, 3> to)
 {
     using K          = detail::Kernel<exact>;
     using PK         = CGAL::Periodic_3_Delaunay_triangulation_traits_3<K>;
@@ -213,9 +219,11 @@ diode::fill_periodic_alpha_shapes(const Points& points, const SimplexCallback& a
 }
 
 #if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
-template<class Points, class SimplexCallback, bool exact>
+template<bool exact>
+template<class Points, class SimplexCallback>
 void
-diode::fill_weighted_periodic_alpha_shapes(const Points& points, const SimplexCallback& add_simplex,
+diode::AlphaShapes<exact>::
+fill_weighted_periodic_alpha_shapes(const Points& points, const SimplexCallback& add_simplex,
                                            std::array<double, 3> from, std::array<double, 3> to)
 {
     using K          = detail::Kernel<exact>;

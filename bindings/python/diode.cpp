@@ -36,7 +36,7 @@ struct AddSimplex
 };
 
 typename AddSimplex<void>::Simplices
-fill_alpha_shape(py::array a)
+fill_alpha_shape(py::array a, bool exact)
 {
     if (a.ndim() != 2)
         throw std::runtime_error("Unknown input dimension: can only process 2D arrays");
@@ -46,13 +46,19 @@ fill_alpha_shape(py::array a)
         if (a.dtype() == py::dtype::of<float>())
         {
             AddSimplex<float>::Simplices filtration;
-            diode::fill_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration));
+            if (exact)
+                diode::AlphaShapes<true>::fill_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration));
+            else
+                diode::AlphaShapes<false>::fill_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration));
             return filtration;
         }
         else if (a.dtype() == py::dtype::of<double>())
         {
             AddSimplex<double>::Simplices filtration;
-            diode::fill_alpha_shapes(ArrayWrapper<double>(a), AddSimplex<double>(&filtration));
+            if (exact)
+                diode::AlphaShapes<true>::fill_alpha_shapes(ArrayWrapper<double>(a), AddSimplex<double>(&filtration));
+            else
+                diode::AlphaShapes<false>::fill_alpha_shapes(ArrayWrapper<double>(a), AddSimplex<double>(&filtration));
             return filtration;
         }
         else
@@ -63,7 +69,7 @@ fill_alpha_shape(py::array a)
 }
 
 typename AddSimplex<void>::Simplices
-fill_weighted_alpha_shape(py::array a)
+fill_weighted_alpha_shape(py::array a, bool exact)
 {
     if (a.ndim() != 2)
         throw std::runtime_error("Unknown input dimension: can only process 2D arrays");
@@ -73,13 +79,19 @@ fill_weighted_alpha_shape(py::array a)
         if (a.dtype() == py::dtype::of<float>())
         {
             AddSimplex<float>::Simplices filtration;
-            diode::fill_weighted_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration));
+            if (exact)
+                diode::AlphaShapes<true>::fill_weighted_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration));
+            else
+                diode::AlphaShapes<false>::fill_weighted_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration));
             return filtration;
         }
         else if (a.dtype() == py::dtype::of<double>())
         {
             AddSimplex<double>::Simplices filtration;
-            diode::fill_weighted_alpha_shapes(ArrayWrapper<double>(a), AddSimplex<double>(&filtration));
+            if (exact)
+                diode::AlphaShapes<true>::fill_weighted_alpha_shapes(ArrayWrapper<double>(a), AddSimplex<double>(&filtration));
+            else
+                diode::AlphaShapes<false>::fill_weighted_alpha_shapes(ArrayWrapper<double>(a), AddSimplex<double>(&filtration));
             return filtration;
         }
         else
@@ -90,7 +102,7 @@ fill_weighted_alpha_shape(py::array a)
 }
 
 typename AddSimplex<void>::Simplices
-fill_periodic_alpha_shape(py::array a, std::array<double,3> from, std::array<double,3> to)
+fill_periodic_alpha_shape(py::array a, bool exact, std::array<double,3> from, std::array<double,3> to)
 {
     if (a.ndim() != 2)
         throw std::runtime_error("Unknown input dimension: can only process 2D arrays");
@@ -100,13 +112,19 @@ fill_periodic_alpha_shape(py::array a, std::array<double,3> from, std::array<dou
         if (a.dtype() == py::dtype::of<float>())
         {
             AddSimplex<float>::Simplices filtration;
-            diode::fill_periodic_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration), from, to);
+            if (exact)
+                diode::AlphaShapes<true>::fill_periodic_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration), from, to);
+            else
+                diode::AlphaShapes<false>::fill_periodic_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration), from, to);
             return filtration;
         }
         else if (a.dtype() == py::dtype::of<double>())
         {
             AddSimplex<double>::Simplices filtration;
-            diode::fill_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex<double>(&filtration), from, to);
+            if (exact)
+                diode::AlphaShapes<true>::fill_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex<double>(&filtration), from, to);
+            else
+                diode::AlphaShapes<false>::fill_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex<double>(&filtration), from, to);
             return filtration;
         }
         else
@@ -118,7 +136,7 @@ fill_periodic_alpha_shape(py::array a, std::array<double,3> from, std::array<dou
 
 #if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
 typename AddSimplex<void>::Simplices
-fill_weighted_periodic_alpha_shape(py::array a, std::array<double,3> from, std::array<double,3> to)
+fill_weighted_periodic_alpha_shape(py::array a, bool exact, std::array<double,3> from, std::array<double,3> to)
 {
     if (a.ndim() != 2)
         throw std::runtime_error("Unknown input dimension: can only process 2D arrays");
@@ -128,13 +146,19 @@ fill_weighted_periodic_alpha_shape(py::array a, std::array<double,3> from, std::
         if (a.dtype() == py::dtype::of<float>())
         {
             AddSimplex<float>::Simplices filtration;
-            diode::fill_weighted_periodic_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration), from, to);
+            if (exact)
+                diode::AlphaShapes<true>::fill_weighted_periodic_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration), from, to);
+            else
+                diode::AlphaShapes<false>::fill_weighted_periodic_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration), from, to);
             return filtration;
         }
         else if (a.dtype() == py::dtype::of<double>())
         {
             AddSimplex<double>::Simplices filtration;
-            diode::fill_weighted_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex<double>(&filtration), from, to);
+            if (exact)
+                diode::AlphaShapes<true>::fill_weighted_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex<double>(&filtration), from, to);
+            else
+                diode::AlphaShapes<false>::fill_weighted_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex<double>(&filtration), from, to);
             return filtration;
         }
         else
@@ -152,19 +176,19 @@ PYBIND11_PLUGIN(diode)
 
     using namespace pybind11::literals;
     m.def("fill_alpha_shapes",  &fill_alpha_shape,
-          "data"_a,
+          "data"_a, "exact"_a = false,
           "returns (sorted) alpha shape filtration of the input points");
     m.def("fill_weighted_alpha_shapes",  &fill_weighted_alpha_shape,
-          "data"_a,
+          "data"_a, "exact"_a = false,
           "returns (sorted) alpha shape filtration of the weighted input points");
     m.def("fill_periodic_alpha_shapes",  &fill_periodic_alpha_shape,
-          "data"_a,
+          "data"_a, "exact"_a = false,
           "from"_a = std::array<double,3> {0.,0.,0.},
           "to"_a   = std::array<double,3> {1.,1.,1.},
           "returns (sorted) alpha shape filtration of the input points on a periodic domain");
 #if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
     m.def("fill_weighted_periodic_alpha_shapes",  &fill_weighted_periodic_alpha_shape,
-          "data"_a,
+          "data"_a, "exact"_a = false,
           "from"_a = std::array<double,3> {0.,0.,0.},
           "to"_a   = std::array<double,3> {1.,1.,1.},
           "returns (sorted) alpha shape filtration of the weighted input points on a periodic domain");

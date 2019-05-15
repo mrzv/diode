@@ -59,6 +59,6 @@ int main(int argc, char** argv)
     Points points = read_points(argv[1]);
 
     // generate the alpha shape
-    diode::fill_periodic_alpha_shapes(points, OutputSimplex(), {0,0,0}, {1,1,1});
+    diode::AlphaShapes<>::fill_periodic_alpha_shapes(points, OutputSimplex(), {0,0,0}, {1,1,1});
 }
 
