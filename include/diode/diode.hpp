@@ -6,6 +6,20 @@ namespace diode
 namespace detail
 {
 
+template<class NT>
+double to_floating_point(const NT& x, typename std::enable_if< !std::is_floating_point<NT>::value >::type* = 0)
+{ return CGAL::to_double(x.exact()); }
+
+// do nothing, if we already have a floating point type
+template<class T>
+T to_floating_point(T x, typename std::enable_if< std::is_floating_point<T>::value >::type* = 0)
+{ return x; }
+
+template<bool exact>
+using Kernel = typename std::conditional<exact,
+                                         CGAL::Exact_predicates_exact_constructions_kernel,
+                                         CGAL::Exact_predicates_inexact_constructions_kernel>::type;
+
 template<class Delaunay_, class Point_ = typename Delaunay_::Point, class Vertex_ = unsigned>
 struct AlphaShapeWrapper
 {
@@ -39,7 +53,7 @@ struct AlphaShapeWrapper
             {
                 auto u = points.find((*v)->point())->second;
                 std::array<Vertex, 1> vertices { u };
-                add_simplex(vertices, a);
+                add_simplex(vertices, to_floating_point(a));
             }
             else if (const E* e = CGAL::object_cast<E>(&o))
             {
@@ -47,7 +61,7 @@ struct AlphaShapeWrapper
                 auto u = points.find(c->vertex(e->second)->point())->second;
                 auto v = points.find(c->vertex(e->third)->point())->second;
                 std::array<Vertex, 2> vertices { u, v };
-                add_simplex(vertices, a);
+                add_simplex(vertices, to_floating_point(a));
             }
             else if (const F* f = CGAL::object_cast<F>(&o))
             {
@@ -57,13 +71,13 @@ struct AlphaShapeWrapper
                 for (size_t i = 0; i < 4; ++i)
                     if (i != f->second)
                         vertices[j++] = points.find(c->vertex(i)->point())->second;
-                add_simplex(vertices, a);
+                add_simplex(vertices, to_floating_point(a));
             } else if (const C* c = CGAL::object_cast<C>(&o))
             {
                 std::array<Vertex, 4> vertices;
                 for (size_t i = 0; i < 4; ++i)
                     vertices[i] = points.find((*c)->vertex(i)->point())->second;
-                add_simplex(vertices, a);
+                add_simplex(vertices, to_floating_point(a));
             } else
                 throw std::runtime_error("Unknown object type in ASOutputIterator3");
 
@@ -91,11 +105,11 @@ struct AlphaShapeWrapper
 }   // detail
 }   // diode
 
-template<class Points, class SimplexCallback>
+template<class Points, class SimplexCallback, bool exact>
 void
 diode::fill_alpha_shapes(const Points& points, const SimplexCallback& add_simplex)
 {
-    using K          = CGAL::Exact_predicates_inexact_constructions_kernel;
+    using K          = detail::Kernel<exact>;
     using Vb         = CGAL::Alpha_shape_vertex_base_3<K>;
     using Fb         = CGAL::Alpha_shape_cell_base_3<K>;
     using TDS        = CGAL::Triangulation_data_structure_3<Vb,Fb>;
@@ -119,11 +133,11 @@ diode::fill_alpha_shapes(const Points& points, const SimplexCallback& add_simple
     ASWrapper::fill_filtration(dt, points_map, add_simplex);
 }
 
-template<class Points, class SimplexCallback>
+template<class Points, class SimplexCallback, bool exact>
 void
 diode::fill_weighted_alpha_shapes(const Points& points, const SimplexCallback& add_simplex)
 {
-    using K         = CGAL::Exact_predicates_inexact_constructions_kernel;
+    using K         = detail::Kernel<exact>;
 
 #if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR <= 9) || (CGAL_VERSION_MAJOR < 4)
     using Gt        = CGAL::Regular_triangulation_euclidean_traits_3<K>;
@@ -158,12 +172,12 @@ diode::fill_weighted_alpha_shapes(const Points& points, const SimplexCallback& a
     ASWrapper::fill_filtration(dt, points_map, add_simplex);
 }
 
-template<class Points, class SimplexCallback>
+template<class Points, class SimplexCallback, bool exact>
 void
 diode::fill_periodic_alpha_shapes(const Points& points, const SimplexCallback& add_simplex,
                                   std::array<double, 3> from, std::array<double, 3> to)
 {
-    using K          = CGAL::Exact_predicates_inexact_constructions_kernel;
+    using K          = detail::Kernel<exact>;
     using PK         = CGAL::Periodic_3_Delaunay_triangulation_traits_3<K>;
 
     using DsVb       = CGAL::Periodic_3_triangulation_ds_vertex_base_3<>;
@@ -188,7 +202,7 @@ diode::fill_periodic_alpha_shapes(const Points& points, const SimplexCallback& a
         points_map[p] = i;
     }
 
-    Delaunay pdt(PK::Iso_cuboid_3(from[0], from[1], from[2], to[0], to[1], to[2]));
+    Delaunay pdt(typename PK::Iso_cuboid_3(from[0], from[1], from[2], to[0], to[1], to[2]));
     auto points_range = points_map | boost::adaptors::map_keys;
     pdt.insert(std::begin(points_range), std::end(points_range), true);
     if (pdt.is_triangulation_in_1_sheet())
@@ -199,12 +213,12 @@ diode::fill_periodic_alpha_shapes(const Points& points, const SimplexCallback& a
 }
 
 #if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
-template<class Points, class SimplexCallback>
+template<class Points, class SimplexCallback, bool exact>
 void
 diode::fill_weighted_periodic_alpha_shapes(const Points& points, const SimplexCallback& add_simplex,
                                            std::array<double, 3> from, std::array<double, 3> to)
 {
-    using K          = CGAL::Exact_predicates_inexact_constructions_kernel;
+    using K          = detail::Kernel<exact>;
     using PK         = CGAL::Periodic_3_regular_triangulation_traits_3<K>;
 
     using DsVb       = CGAL::Periodic_3_triangulation_ds_vertex_base_3<>;
@@ -245,7 +259,7 @@ diode::fill_weighted_periodic_alpha_shapes(const Points& points, const SimplexCa
         points_map[p] = i;
     }
 
-    Delaunay pdt(PK::Iso_cuboid_3(from[0], from[1], from[2], to[0], to[1], to[2]));
+    Delaunay pdt(typename PK::Iso_cuboid_3(from[0], from[1], from[2], to[0], to[1], to[2]));
     auto points_range = points_map | boost::adaptors::map_keys;
     pdt.insert(std::begin(points_range), std::end(points_range), true);
     if (pdt.is_triangulation_in_1_sheet())
