@@ -124,3 +124,16 @@ shape for a weighted point set on a periodic cube::
     >>> weighted_points[:,3] /= 64
     >>> simplices_weighted_periodic = diode.fill_weighted_periodic_alpha_shapes(weighted_points)
 
+
+Exactness
+~~~~~~~~~
+
+All functions take an argument `exact`, set to `False` by default. The argument
+determines a choice of the kernel in CGAL
+(`Exact_predicates_inexact_constructions_kernel` vs
+`Exact_predicates_exact_constructions_kernel`). `exact = True` guarantees
+correctness of the output; `exact = False` is faster, but can sometimes fail
+(not even produce a simplicial complex). It's possible to run the two versions
+adaptively by running the default `exact = False` version first, and if the
+result is not a simplicial complex, then run `exact = True`. This should be the
+best of both worlds.
