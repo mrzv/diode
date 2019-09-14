@@ -1,0 +1,6 @@
+imports:
+    pybind11: ./ext/pybind11
+
+git module pybind11:
+    url: https://github.com/pybind/pybind11.git
+    rev: v2.3.0
