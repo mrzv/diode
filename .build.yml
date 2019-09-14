@@ -1,0 +1,16 @@
+image: archlinux
+packages:
+  - cmake
+  - python
+  - boost
+  - cgal
+sources:
+  - https://github.com/mrzv/diode
+tasks:
+  - setup: |
+      mkdir diode/build
+      cd diode/build
+      cmake ..
+  - build: |
+      cd diode/build
+      make
