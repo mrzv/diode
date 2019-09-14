@@ -43,7 +43,7 @@ fill_alpha_shape(py::array a, bool exact)
 
     if (a.shape()[1] == 3)
     {
-        if (a.dtype() == py::dtype::of<float>())
+        if (a.dtype().is(py::dtype::of<float>()))
         {
             AddSimplex<float>::Simplices filtration;
             if (exact)
@@ -52,7 +52,7 @@ fill_alpha_shape(py::array a, bool exact)
                 diode::AlphaShapes<false>::fill_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration));
             return filtration;
         }
-        else if (a.dtype() == py::dtype::of<double>())
+        else if (a.dtype().is(py::dtype::of<double>()))
         {
             AddSimplex<double>::Simplices filtration;
             if (exact)
@@ -76,7 +76,7 @@ fill_weighted_alpha_shape(py::array a, bool exact)
 
     if (a.shape()[1] == 4)
     {
-        if (a.dtype() == py::dtype::of<float>())
+        if (a.dtype().is(py::dtype::of<float>()))
         {
             AddSimplex<float>::Simplices filtration;
             if (exact)
@@ -85,7 +85,7 @@ fill_weighted_alpha_shape(py::array a, bool exact)
                 diode::AlphaShapes<false>::fill_weighted_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration));
             return filtration;
         }
-        else if (a.dtype() == py::dtype::of<double>())
+        else if (a.dtype().is(py::dtype::of<double>()))
         {
             AddSimplex<double>::Simplices filtration;
             if (exact)
@@ -109,7 +109,7 @@ fill_periodic_alpha_shape(py::array a, bool exact, std::array<double,3> from, st
 
     if (a.shape()[1] == 3)
     {
-        if (a.dtype() == py::dtype::of<float>())
+        if (a.dtype().is(py::dtype::of<float>()))
         {
             AddSimplex<float>::Simplices filtration;
             if (exact)
@@ -118,7 +118,7 @@ fill_periodic_alpha_shape(py::array a, bool exact, std::array<double,3> from, st
                 diode::AlphaShapes<false>::fill_periodic_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration), from, to);
             return filtration;
         }
-        else if (a.dtype() == py::dtype::of<double>())
+        else if (a.dtype().is(py::dtype::of<double>()))
         {
             AddSimplex<double>::Simplices filtration;
             if (exact)
@@ -143,7 +143,7 @@ fill_weighted_periodic_alpha_shape(py::array a, bool exact, std::array<double,3>
 
     if (a.shape()[1] == 4)
     {
-        if (a.dtype() == py::dtype::of<float>())
+        if (a.dtype().is(py::dtype::of<float>()))
         {
             AddSimplex<float>::Simplices filtration;
             if (exact)
@@ -152,7 +152,7 @@ fill_weighted_periodic_alpha_shape(py::array a, bool exact, std::array<double,3>
                 diode::AlphaShapes<false>::fill_weighted_periodic_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration), from, to);
             return filtration;
         }
-        else if (a.dtype() == py::dtype::of<double>())
+        else if (a.dtype().is(py::dtype::of<double>()))
         {
             AddSimplex<double>::Simplices filtration;
             if (exact)
@@ -170,9 +170,9 @@ fill_weighted_periodic_alpha_shape(py::array a, bool exact, std::array<double,3>
 #endif
 
 
-PYBIND11_PLUGIN(diode)
+PYBIND11_MODULE(diode, m)
 {
-    py::module m("diode", "DioDe pythonn bindings");
+    m.doc() = "DioDe pythonn bindings";
 
     using namespace pybind11::literals;
     m.def("fill_alpha_shapes",  &fill_alpha_shape,
@@ -193,7 +193,5 @@ PYBIND11_PLUGIN(diode)
           "to"_a   = std::array<double,3> {1.,1.,1.},
           "returns (sorted) alpha shape filtration of the weighted input points on a periodic domain");
 #endif
-
-    return m.ptr();
 }
 
