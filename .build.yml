@@ -8,6 +8,8 @@ packages:
   - python
   - boost
   - cgal
+  - python-numpy
+  - python-pytest
 sources:
   - https://github.com/mrzv/diode
 tasks:
@@ -18,3 +20,7 @@ tasks:
   - build: |
       cd diode/build
       make
+  - test: |
+      export PYTHONPATH=~/diode/build/bindings/python
+      cd diode/tests
+      pytest
