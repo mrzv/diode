@@ -13,7 +13,7 @@ packages:
 sources:
   - https://github.com/mrzv/diode
 tasks:
-  - setup: |
+  - configure: |
       mkdir diode/build
       cd diode/build
       cmake ..
