@@ -18,7 +18,6 @@ struct ArrayWrapper
     const py::array_t<T>& a;
 };
 
-template<class T>
 struct AddSimplex
 {
     using Simplices = std::vector<std::tuple<std::vector<unsigned>, double>>;
@@ -35,7 +34,7 @@ struct AddSimplex
     Simplices* result;
 };
 
-typename AddSimplex<void>::Simplices
+AddSimplex::Simplices
 fill_alpha_shape(py::array a, bool exact)
 {
     if (a.ndim() != 2)
@@ -45,20 +44,20 @@ fill_alpha_shape(py::array a, bool exact)
     {
         if (a.dtype().is(py::dtype::of<float>()))
         {
-            AddSimplex<float>::Simplices filtration;
+            AddSimplex::Simplices filtration;
             if (exact)
-                diode::AlphaShapes<true>::fill_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration));
+                diode::AlphaShapes<true>::fill_alpha_shapes(ArrayWrapper<float>(a), AddSimplex(&filtration));
             else
-                diode::AlphaShapes<false>::fill_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration));
+                diode::AlphaShapes<false>::fill_alpha_shapes(ArrayWrapper<float>(a), AddSimplex(&filtration));
             return filtration;
         }
         else if (a.dtype().is(py::dtype::of<double>()))
         {
-            AddSimplex<double>::Simplices filtration;
+            AddSimplex::Simplices filtration;
             if (exact)
-                diode::AlphaShapes<true>::fill_alpha_shapes(ArrayWrapper<double>(a), AddSimplex<double>(&filtration));
+                diode::AlphaShapes<true>::fill_alpha_shapes(ArrayWrapper<double>(a), AddSimplex(&filtration));
             else
-                diode::AlphaShapes<false>::fill_alpha_shapes(ArrayWrapper<double>(a), AddSimplex<double>(&filtration));
+                diode::AlphaShapes<false>::fill_alpha_shapes(ArrayWrapper<double>(a), AddSimplex(&filtration));
             return filtration;
         }
         else
@@ -68,7 +67,7 @@ fill_alpha_shape(py::array a, bool exact)
         throw std::runtime_error("Can only handle 3D alpha shapes");
 }
 
-typename AddSimplex<void>::Simplices
+AddSimplex::Simplices
 fill_weighted_alpha_shape(py::array a, bool exact)
 {
     if (a.ndim() != 2)
@@ -78,20 +77,20 @@ fill_weighted_alpha_shape(py::array a, bool exact)
     {
         if (a.dtype().is(py::dtype::of<float>()))
         {
-            AddSimplex<float>::Simplices filtration;
+            AddSimplex::Simplices filtration;
             if (exact)
-                diode::AlphaShapes<true>::fill_weighted_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration));
+                diode::AlphaShapes<true>::fill_weighted_alpha_shapes(ArrayWrapper<float>(a), AddSimplex(&filtration));
             else
-                diode::AlphaShapes<false>::fill_weighted_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration));
+                diode::AlphaShapes<false>::fill_weighted_alpha_shapes(ArrayWrapper<float>(a), AddSimplex(&filtration));
             return filtration;
         }
         else if (a.dtype().is(py::dtype::of<double>()))
         {
-            AddSimplex<double>::Simplices filtration;
+            AddSimplex::Simplices filtration;
             if (exact)
-                diode::AlphaShapes<true>::fill_weighted_alpha_shapes(ArrayWrapper<double>(a), AddSimplex<double>(&filtration));
+                diode::AlphaShapes<true>::fill_weighted_alpha_shapes(ArrayWrapper<double>(a), AddSimplex(&filtration));
             else
-                diode::AlphaShapes<false>::fill_weighted_alpha_shapes(ArrayWrapper<double>(a), AddSimplex<double>(&filtration));
+                diode::AlphaShapes<false>::fill_weighted_alpha_shapes(ArrayWrapper<double>(a), AddSimplex(&filtration));
             return filtration;
         }
         else
@@ -101,7 +100,7 @@ fill_weighted_alpha_shape(py::array a, bool exact)
         throw std::runtime_error("Can only handle 3D alpha shapes (input must be a 4-column array: coordinates + weight)");
 }
 
-typename AddSimplex<void>::Simplices
+AddSimplex::Simplices
 fill_periodic_alpha_shape(py::array a, bool exact, std::array<double,3> from, std::array<double,3> to)
 {
     if (a.ndim() != 2)
@@ -111,20 +110,20 @@ fill_periodic_alpha_shape(py::array a, bool exact, std::array<double,3> from, st
     {
         if (a.dtype().is(py::dtype::of<float>()))
         {
-            AddSimplex<float>::Simplices filtration;
+            AddSimplex::Simplices filtration;
             if (exact)
-                diode::AlphaShapes<true>::fill_periodic_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration), from, to);
+                diode::AlphaShapes<true>::fill_periodic_alpha_shapes(ArrayWrapper<float>(a), AddSimplex(&filtration), from, to);
             else
-                diode::AlphaShapes<false>::fill_periodic_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration), from, to);
+                diode::AlphaShapes<false>::fill_periodic_alpha_shapes(ArrayWrapper<float>(a), AddSimplex(&filtration), from, to);
             return filtration;
         }
         else if (a.dtype().is(py::dtype::of<double>()))
         {
-            AddSimplex<double>::Simplices filtration;
+            AddSimplex::Simplices filtration;
             if (exact)
-                diode::AlphaShapes<true>::fill_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex<double>(&filtration), from, to);
+                diode::AlphaShapes<true>::fill_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex(&filtration), from, to);
             else
-                diode::AlphaShapes<false>::fill_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex<double>(&filtration), from, to);
+                diode::AlphaShapes<false>::fill_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex(&filtration), from, to);
             return filtration;
         }
         else
@@ -135,7 +134,7 @@ fill_periodic_alpha_shape(py::array a, bool exact, std::array<double,3> from, st
 }
 
 #if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
-typename AddSimplex<void>::Simplices
+AddSimplex::Simplices
 fill_weighted_periodic_alpha_shape(py::array a, bool exact, std::array<double,3> from, std::array<double,3> to)
 {
     if (a.ndim() != 2)
@@ -145,20 +144,20 @@ fill_weighted_periodic_alpha_shape(py::array a, bool exact, std::array<double,3>
     {
         if (a.dtype().is(py::dtype::of<float>()))
         {
-            AddSimplex<float>::Simplices filtration;
+            AddSimplex::Simplices filtration;
             if (exact)
-                diode::AlphaShapes<true>::fill_weighted_periodic_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration), from, to);
+                diode::AlphaShapes<true>::fill_weighted_periodic_alpha_shapes(ArrayWrapper<float>(a), AddSimplex(&filtration), from, to);
             else
-                diode::AlphaShapes<false>::fill_weighted_periodic_alpha_shapes(ArrayWrapper<float>(a), AddSimplex<float>(&filtration), from, to);
+                diode::AlphaShapes<false>::fill_weighted_periodic_alpha_shapes(ArrayWrapper<float>(a), AddSimplex(&filtration), from, to);
             return filtration;
         }
         else if (a.dtype().is(py::dtype::of<double>()))
         {
-            AddSimplex<double>::Simplices filtration;
+            AddSimplex::Simplices filtration;
             if (exact)
-                diode::AlphaShapes<true>::fill_weighted_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex<double>(&filtration), from, to);
+                diode::AlphaShapes<true>::fill_weighted_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex(&filtration), from, to);
             else
-                diode::AlphaShapes<false>::fill_weighted_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex<double>(&filtration), from, to);
+                diode::AlphaShapes<false>::fill_weighted_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex(&filtration), from, to);
             return filtration;
         }
         else
