@@ -62,6 +62,16 @@ fill_alpha_shape(py::array a, bool exact)
         }
         else
             throw std::runtime_error("Unknown array dtype");
+    } else if (a.shape()[1] == 2)
+    {
+        AddSimplex::Simplices filtration;
+        if (a.dtype().is(py::dtype::of<float>()))
+            diode::fill_alpha_shapes2d(ArrayWrapper<float>(a), AddSimplex(&filtration));
+        else if (a.dtype().is(py::dtype::of<double>()))
+            diode::fill_alpha_shapes2d(ArrayWrapper<double>(a), AddSimplex(&filtration));
+        else
+            throw std::runtime_error("Unknown array dtype");
+        return filtration;
     }
     else
         throw std::runtime_error("Can only handle 3D alpha shapes");

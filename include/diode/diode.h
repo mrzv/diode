@@ -13,6 +13,8 @@
 #include <CGAL/Periodic_3_Delaunay_triangulation_3.h>
 #include <CGAL/Alpha_shape_3.h>
 
+#include <CGAL/Delaunay_triangulation_2.h>
+
 #include <CGAL/version_macros.h>
 
 #if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
@@ -44,6 +46,9 @@ struct AlphaShapes
                                                     std::array<double, 3> from, std::array<double, 3> to);
 #endif
 };
+
+template<class Points, class SimplexCallback>
+void fill_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex);
 
 }
 
