@@ -26,3 +26,18 @@ def test_cube():
 
     for s1,s2 in zip(sorted(f), sorted(expected_f)):
         assert(s1 == s2)
+
+def test_square():
+    points = np.array([[0.,0.],[1.,0.],[0.,1.]])
+    f = diode.fill_alpha_shapes(points)
+
+    expected_f = [([0], 0.0),
+                  ([1], 0.0),
+                  ([2], 0.0),
+                  ([0, 1], 0.25),
+                  ([0, 2], 0.25),
+                  ([1, 2], 0.5),
+                  ([0, 1, 2], 0.5)]
+
+    for s1,s2 in zip(sorted(f), sorted(expected_f)):
+        assert(s1 == s2)
