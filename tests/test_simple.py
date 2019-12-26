@@ -41,3 +41,14 @@ def test_square():
 
     for s1,s2 in zip(sorted(f), sorted(expected_f)):
         assert(s1 == s2)
+
+def is_sorted(lst, key = lambda x: x):
+    return all(key(lst[i]) <= key(lst[i+1]) for i in range(len(lst) - 1))
+
+def test_sorted():
+    np.random.seed(42)
+    for dim in [2,3]:
+        points = np.random.random((1000,dim))
+        f = diode.fill_alpha_shapes(points)
+
+        assert(is_sorted(f, key = lambda x: (x[1], len(x[0]))))
