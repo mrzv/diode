@@ -71,6 +71,26 @@ fill_alpha_shape(py::array a, bool exact)
             diode::fill_alpha_shapes2d(ArrayWrapper<double>(a), AddSimplex(&filtration));
         else
             throw std::runtime_error("Unknown array dtype");
+
+        // sort the filtration
+        using Simplex = AddSimplex::Simplices::value_type;
+        std::sort(filtration.begin(), filtration.end(), [](const Simplex& x, const Simplex& y)
+        {
+            auto xv = std::get<1>(x);
+            auto yv = std::get<1>(y);
+
+            if (xv < yv) return true;
+            if (xv > yv) return false;
+
+            auto& xvert = std::get<0>(x);
+            auto& yvert = std::get<0>(y);
+
+            if (xvert.size() < yvert.size()) return true;
+            if (xvert.size() > yvert.size()) return false;
+
+            return std::lexicographical_compare(xvert.begin(), xvert.end(), yvert.begin(), yvert.end());
+        });
+
         return filtration;
     }
     else
