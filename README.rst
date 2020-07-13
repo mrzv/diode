@@ -17,6 +17,12 @@ The simplest way to install Diode as a Python package:
 
 .. parsed-literal::
 
+    pip install --verbose diode
+
+or from this repository directly:
+
+.. parsed-literal::
+
     pip install --verbose `git+https://github.com/mrzv/diode.git <https://github.com/mrzv/diode.git>`_
 
 Alternatively, you can clone and build everything by hand.
