@@ -68,6 +68,23 @@ setup(
     packages=['diode'],
     package_dir = { 'diode' : 'bindings/python' },
     cmdclass=dict(build_ext=CMakeBuild),
+    classifiers=[
+        'Development Status :: 5 - Production/Stable',
+        'Intended Audience :: Developers',
+        'Intended Audience :: Education',
+        'Intended Audience :: Science/Research',
+        'Topic :: Software Development :: Libraries :: Python Modules',
+        'Topic :: Utilities',
+        'Programming Language :: C++',
+        'Programming Language :: Python :: 2.7',
+        'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 3.2',
+        'Programming Language :: Python :: 3.3',
+        'Programming Language :: Python :: 3.4',
+        'Programming Language :: Python :: 3.5',
+        'Programming Language :: Python :: 3.6',
+        'License :: OSI Approved :: GNU General Public License v3 (GPLv3)'
+    ],
     zip_safe=False,
 )
 
