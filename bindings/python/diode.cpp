@@ -94,7 +94,7 @@ fill_alpha_shape(py::array a, bool exact)
         return filtration;
     }
     else
-        throw std::runtime_error("Can only handle 3D alpha shapes");
+        throw std::runtime_error("Can only handle 2D or 3D alpha shapes");
 }
 
 AddSimplex::Simplices
@@ -159,8 +159,39 @@ fill_periodic_alpha_shape(py::array a, bool exact, std::array<double,3> from, st
         else
             throw std::runtime_error("Unknown array dtype");
     }
+    else if (a.shape()[1] == 2)
+    {
+        AddSimplex::Simplices filtration;
+        if (a.dtype().is(py::dtype::of<float>()))
+            diode::fill_periodic_alpha_shapes2d(ArrayWrapper<float>(a), AddSimplex(&filtration),from,to);
+        else if (a.dtype().is(py::dtype::of<double>()))
+            diode::fill_periodic_alpha_shapes2d(ArrayWrapper<double>(a), AddSimplex(&filtration),from,to);
+        else
+            throw std::runtime_error("Unknown array dtype");
+
+        // sort the filtration
+        using Simplex = AddSimplex::Simplices::value_type;
+        std::sort(filtration.begin(), filtration.end(), [](const Simplex& x, const Simplex& y)
+        {
+            auto xv = std::get<1>(x);
+            auto yv = std::get<1>(y);
+
+            if (xv < yv) return true;
+            if (xv > yv) return false;
+
+            auto& xvert = std::get<0>(x);
+            auto& yvert = std::get<0>(y);
+
+            if (xvert.size() < yvert.size()) return true;
+            if (xvert.size() > yvert.size()) return false;
+
+            return std::lexicographical_compare(xvert.begin(), xvert.end(), yvert.begin(), yvert.end());
+        });
+
+        return filtration;
+    }
     else
-        throw std::runtime_error("Can only handle 3D alpha shapes");
+        throw std::runtime_error("Can only handle 2D or 3D alpha shapes");
 }
 
 #if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)

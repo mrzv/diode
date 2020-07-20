@@ -444,3 +444,188 @@ fill_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex)
         }
     }
 }
+
+
+template<class Points, class SimplexCallback>
+void
+diode::
+fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex,std::array<double, 3> from, std::array<double, 3> to)
+{
+    using K             = CGAL::Exact_predicates_exact_constructions_kernel;
+    using GT            = CGAL::Periodic_2_Delaunay_triangulation_traits_2<K>;
+    using Delaunay2D    = CGAL::Periodic_2_Delaunay_triangulation_2<GT>;
+    using Vertex_handle = Delaunay2D::Vertex_handle;
+    using Point         = Delaunay2D::Point;
+    using Face_handle   = Delaunay2D::Face_handle;
+    using Iso_rectangle = Delaunay2D::Iso_rectangle;
+
+    using ASPointMap    = std::unordered_map<Vertex_handle, unsigned>;
+
+    Iso_rectangle domain(from[0],from[1],to[0],to[1]);
+    Delaunay2D  Dt(domain);
+
+
+    ASPointMap  point_map;
+
+    for (unsigned i = 0; i < points.size(); ++i)
+    {
+        auto x = points(i,0);
+        auto y = points(i,1);
+        point_map[Dt.insert(Point(x,y))] = i;
+    }
+
+
+    // fill simplex set
+    struct Simplex2D: public std::array<unsigned, 3>
+    {
+        double value;
+        unsigned dimension;
+
+        void sort() { std::sort(begin(), begin() + dimension + 1); }
+
+        bool operator<(const Simplex2D& s) const
+        {
+            if (dimension < s.dimension) return true;
+            if (dimension == s.dimension)
+                return std::lexicographical_compare(begin(), begin() + dimension + 1, s.begin(), s.begin() + dimension + 1);
+
+            return false;
+        }
+
+
+        bool operator==(const Simplex2D& s) const
+        {
+            if (dimension != s.dimension)
+                return false;
+            for (unsigned i = 0; i < dimension + 1; ++i)
+                if ((*this)[i] != s[i])
+                    return false;
+            return true;
+        }
+    };
+
+     auto simplex_from_face = [&](const Delaunay2D::Face_handle f)
+     {
+        Simplex2D s;
+
+        s.dimension = 2;
+        for (int i = 0; i < 3; ++i) s[i] = point_map[f->vertex(i)];
+        
+        auto T = Dt.triangle(Dt.periodic_triangle(f));
+
+        auto p1    = T.vertex(0);
+        auto p2    = T.vertex(1);
+        auto p3    = T.vertex(2);
+
+        auto alpha = CGAL::squared_radius(p1, p2, p3);
+        s.value = detail::to_floating_point(alpha);
+
+        s.sort();
+
+        return s;
+    };
+    
+    std::set<Simplex2D> simplices;
+
+
+    // faces
+    for(auto cur = Dt.finite_faces_begin(); cur != Dt.finite_faces_end(); ++cur)
+    {
+        Simplex2D s = simplex_from_face(cur);
+        simplices.emplace(s);
+    }
+
+    // edges
+    for(auto cur = Dt.finite_edges_begin(); cur != Dt.finite_edges_end(); ++cur)
+    {
+        auto e = *cur;
+        Simplex2D s; s.dimension = 1;
+
+        std::array<Point,2> points;
+        unsigned j = 0;
+        Face_handle f = e.first;
+        auto t = Dt.triangle(f);
+        for (int i = 0; i < 3; ++i)
+            if (i != e.second)
+            {
+                points[j] = t.vertex(i);
+                s[j++] = point_map[f->vertex(i)];
+            }
+        auto& p1 = points[0];
+        auto& p2 = points[1];
+
+        Face_handle o = f->neighbor(e.second);
+        if (o == Face_handle())
+        {
+            s.value = detail::to_floating_point(CGAL::squared_radius(p1, p2));
+        } else
+        {
+            int oi = o->index(f);
+
+            bool attached = false;
+            if (!Dt.is_infinite(f->vertex(e.second)) &&
+                CGAL::side_of_bounded_circle(p1, p2,
+                                             f->vertex(e.second)->point()) == CGAL::ON_BOUNDED_SIDE)
+                attached = true;
+            else if (!Dt.is_infinite(o->vertex(oi)) &&
+                     CGAL::side_of_bounded_circle(p1, p2,
+                                                  o->vertex(oi)->point()) == CGAL::ON_BOUNDED_SIDE)
+                attached = true;
+            else
+                s.value = detail::to_floating_point(CGAL::squared_radius(p1, p2));
+
+            if (attached)
+            {
+                if (Dt.is_infinite(f)){
+
+                    s.value = simplices.find(simplex_from_face(o))->value;
+
+                    }
+                else if (Dt.is_infinite(o)){
+                    s.value = simplices.find(simplex_from_face(f))->value;
+
+                }
+                else{
+                    s.value = std::min(simplices.find(simplex_from_face(f))->value,
+                                       simplices.find(simplex_from_face(o))->value);
+                }
+                    
+            }
+        }
+
+        s.sort();
+        simplices.emplace(s);
+    }
+
+    // vertices
+    for(auto cur = Dt.finite_vertices_begin(); cur != Dt.finite_vertices_end(); ++cur)
+    {
+        Simplex2D s;
+
+        s.dimension = 0;
+        s.value = 0;
+        for (int i = 0; i < 3; ++i)
+            if (cur->face()->vertex(i) != Vertex_handle() && cur->face()->vertex(i)->point() == cur->point())
+                s[0] = point_map[cur->face()->vertex(i)];
+
+        simplices.emplace(s);
+    }
+
+    // invoke callback with the simplices
+    for (auto& s : simplices)
+    {
+        if (s.dimension == 0)
+        {
+            std::array<unsigned, 1> vertices { s[0] };
+            add_simplex(vertices, s.value);
+        } else if (s.dimension == 1)
+        {
+            std::array<unsigned, 2> vertices { s[0], s[1] };
+            add_simplex(vertices, s.value);
+        } else if (s.dimension == 2)
+        {
+            std::array<unsigned, 3> vertices { s[0], s[1], s[2] };
+            add_simplex(vertices, s.value);
+        }
+    }
+}
