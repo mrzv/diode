@@ -34,6 +34,27 @@ struct AddSimplex
     Simplices* result;
 };
 
+void sort_filtration(AddSimplex::Simplices& filtration)
+{
+    using Simplex = AddSimplex::Simplices::value_type;
+    std::sort(filtration.begin(), filtration.end(), [](const Simplex& x, const Simplex& y)
+    {
+        auto xv = std::get<1>(x);
+        auto yv = std::get<1>(y);
+
+        if (xv < yv) return true;
+        if (xv > yv) return false;
+
+        auto& xvert = std::get<0>(x);
+        auto& yvert = std::get<0>(y);
+
+        if (xvert.size() < yvert.size()) return true;
+        if (xvert.size() > yvert.size()) return false;
+
+        return std::lexicographical_compare(xvert.begin(), xvert.end(), yvert.begin(), yvert.end());
+    });
+}
+
 AddSimplex::Simplices
 fill_alpha_shape(py::array a, bool exact)
 {
@@ -72,25 +93,7 @@ fill_alpha_shape(py::array a, bool exact)
         else
             throw std::runtime_error("Unknown array dtype");
 
-        // sort the filtration
-        using Simplex = AddSimplex::Simplices::value_type;
-        std::sort(filtration.begin(), filtration.end(), [](const Simplex& x, const Simplex& y)
-        {
-            auto xv = std::get<1>(x);
-            auto yv = std::get<1>(y);
-
-            if (xv < yv) return true;
-            if (xv > yv) return false;
-
-            auto& xvert = std::get<0>(x);
-            auto& yvert = std::get<0>(y);
-
-            if (xvert.size() < yvert.size()) return true;
-            if (xvert.size() > yvert.size()) return false;
-
-            return std::lexicographical_compare(xvert.begin(), xvert.end(), yvert.begin(), yvert.end());
-        });
-
+        sort_filtration(filtration);
         return filtration;
     }
     else
@@ -131,13 +134,16 @@ fill_weighted_alpha_shape(py::array a, bool exact)
 }
 
 AddSimplex::Simplices
-fill_periodic_alpha_shape(py::array a, bool exact, std::array<double,3> from, std::array<double,3> to)
+fill_periodic_alpha_shape(py::array a, bool exact, std::vector<double> from_, std::vector<double> to_)
 {
     if (a.ndim() != 2)
         throw std::runtime_error("Unknown input dimension: can only process 2D arrays");
 
     if (a.shape()[1] == 3)
     {
+        std::array<double,3> from { from_[0], from_[1], from_[2] },
+                             to   { to_[0],   to_[1],   to_[2]   };
+
         if (a.dtype().is(py::dtype::of<float>()))
         {
             AddSimplex::Simplices filtration;
@@ -161,6 +167,9 @@ fill_periodic_alpha_shape(py::array a, bool exact, std::array<double,3> from, st
     }
     else if (a.shape()[1] == 2)
     {
+        std::array<double,2> from { from_[0], from_[1] },
+                             to   { to_[0],   to_[1]   };
+
         AddSimplex::Simplices filtration;
         if (a.dtype().is(py::dtype::of<float>()))
             diode::fill_periodic_alpha_shapes2d(ArrayWrapper<float>(a), AddSimplex(&filtration),from,to);
@@ -169,25 +178,7 @@ fill_periodic_alpha_shape(py::array a, bool exact, std::array<double,3> from, st
         else
             throw std::runtime_error("Unknown array dtype");
 
-        // sort the filtration
-        using Simplex = AddSimplex::Simplices::value_type;
-        std::sort(filtration.begin(), filtration.end(), [](const Simplex& x, const Simplex& y)
-        {
-            auto xv = std::get<1>(x);
-            auto yv = std::get<1>(y);
-
-            if (xv < yv) return true;
-            if (xv > yv) return false;
-
-            auto& xvert = std::get<0>(x);
-            auto& yvert = std::get<0>(y);
-
-            if (xvert.size() < yvert.size()) return true;
-            if (xvert.size() > yvert.size()) return false;
-
-            return std::lexicographical_compare(xvert.begin(), xvert.end(), yvert.begin(), yvert.end());
-        });
-
+        sort_filtration(filtration);
         return filtration;
     }
     else
@@ -243,8 +234,8 @@ PYBIND11_MODULE(diode, m)
           "returns (sorted) alpha shape filtration of the weighted input points");
     m.def("fill_periodic_alpha_shapes",  &fill_periodic_alpha_shape,
           "data"_a, "exact"_a = false,
-          "from"_a = std::array<double,3> {0.,0.,0.},
-          "to"_a   = std::array<double,3> {1.,1.,1.},
+          "from"_a = std::vector<double> {0.,0.,0.},
+          "to"_a   = std::vector<double> {1.,1.,1.},
           "returns (sorted) alpha shape filtration of the input points on a periodic domain");
 #if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
     m.def("fill_weighted_periodic_alpha_shapes",  &fill_weighted_periodic_alpha_shape,

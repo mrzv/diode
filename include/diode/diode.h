@@ -55,7 +55,7 @@ void fill_alpha_shapes2d(const Points& points, const SimplexCallback& add_simple
 
 template<class Points, class SimplexCallback>
 void fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex,
-                                std::array<double, 3> from, std::array<double, 3> to);
+                                std::array<double, 2> from, std::array<double, 2> to);
 
 
 

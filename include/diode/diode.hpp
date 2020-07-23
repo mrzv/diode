@@ -449,7 +449,7 @@ fill_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex)
 template<class Points, class SimplexCallback>
 void
 diode::
-fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex,std::array<double, 3> from, std::array<double, 3> to)
+fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex,std::array<double, 2> from, std::array<double, 2> to)
 {
     using K             = CGAL::Exact_predicates_exact_constructions_kernel;
     using GT            = CGAL::Periodic_2_Delaunay_triangulation_traits_2<K>;
