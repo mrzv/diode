@@ -52,3 +52,13 @@ def test_sorted():
         f = diode.fill_alpha_shapes(points)
 
         assert(is_sorted(f, key = lambda x: (x[1], len(x[0]))))
+
+
+def test_periodic():
+    np.random.seed(42)
+    for dim in [2,3]:
+        points = np.random.random((1000,dim))
+        f = diode.fill_periodic_alpha_shapes(points)
+
+        assert(is_sorted(f, key = lambda x: (x[1], len(x[0]))))
+    
