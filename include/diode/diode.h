@@ -15,6 +15,9 @@
 
 #include <CGAL/Delaunay_triangulation_2.h>
 
+#include <CGAL/Periodic_2_Delaunay_triangulation_2.h>
+#include <CGAL/Periodic_2_Delaunay_triangulation_traits_2.h>
+
 #include <CGAL/version_macros.h>
 
 #if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
@@ -49,6 +52,12 @@ struct AlphaShapes
 
 template<class Points, class SimplexCallback>
 void fill_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex);
+
+template<class Points, class SimplexCallback>
+void fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex,
+                                std::array<double, 2> from, std::array<double, 2> to);
+
+
 
 }
 
