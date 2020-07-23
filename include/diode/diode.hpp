@@ -453,16 +453,16 @@ fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_si
 {
     using K             = CGAL::Exact_predicates_exact_constructions_kernel;
     using GT            = CGAL::Periodic_2_Delaunay_triangulation_traits_2<K>;
-    using Delaunay2D    = CGAL::Periodic_2_Delaunay_triangulation_2<GT>;
-    using Vertex_handle = Delaunay2D::Vertex_handle;
-    using Point         = Delaunay2D::Point;
-    using Face_handle   = Delaunay2D::Face_handle;
-    using Iso_rectangle = Delaunay2D::Iso_rectangle;
+    using PDelaunay2D   = CGAL::Periodic_2_Delaunay_triangulation_2<GT>;
+    using Vertex_handle = PDelaunay2D::Vertex_handle;
+    using Point         = PDelaunay2D::Point;
+    using Face_handle   = PDelaunay2D::Face_handle;
+    using Iso_rectangle = PDelaunay2D::Iso_rectangle;
 
     using ASPointMap    = std::unordered_map<Vertex_handle, unsigned>;
 
     Iso_rectangle domain(from[0],from[1],to[0],to[1]);
-    Delaunay2D  Dt(domain);
+    PDelaunay2D  pdt(domain);
 
 
     ASPointMap  point_map;
@@ -471,9 +471,13 @@ fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_si
     {
         auto x = points(i,0);
         auto y = points(i,1);
-        point_map[Dt.insert(Point(x,y))] = i;
+        point_map[pdt.insert(Point(x,y))] = i;
     }
-
+    
+    if (pdt.is_triangulation_in_1_sheet())
+        pdt.convert_to_1_sheeted_covering();
+    else
+        throw std::runtime_error("Cannot convert to 1-sheeted covering");
 
     // fill simplex set
     struct Simplex2D: public std::array<unsigned, 3>
@@ -504,14 +508,14 @@ fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_si
         }
     };
 
-     auto simplex_from_face = [&](const Delaunay2D::Face_handle f)
+     auto simplex_from_face = [&](const PDelaunay2D::Face_handle f)
      {
         Simplex2D s;
 
         s.dimension = 2;
         for (int i = 0; i < 3; ++i) s[i] = point_map[f->vertex(i)];
         
-        auto T = Dt.triangle(Dt.periodic_triangle(f));
+        auto T =pdt.triangle(pdt.periodic_triangle(f));
 
         auto p1    = T.vertex(0);
         auto p2    = T.vertex(1);
@@ -529,14 +533,14 @@ fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_si
 
 
     // faces
-    for(auto cur = Dt.finite_faces_begin(); cur != Dt.finite_faces_end(); ++cur)
+    for(auto cur = pdt.finite_faces_begin(); cur != pdt.finite_faces_end(); ++cur)
     {
         Simplex2D s = simplex_from_face(cur);
         simplices.emplace(s);
     }
 
     // edges
-    for(auto cur = Dt.finite_edges_begin(); cur != Dt.finite_edges_end(); ++cur)
+    for(auto cur = pdt.finite_edges_begin(); cur != pdt.finite_edges_end(); ++cur)
     {
         auto e = *cur;
         Simplex2D s; s.dimension = 1;
@@ -544,7 +548,7 @@ fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_si
         std::array<Point,2> points;
         unsigned j = 0;
         Face_handle f = e.first;
-        auto t = Dt.triangle(f);
+        auto t = pdt.triangle(f);
         for (int i = 0; i < 3; ++i)
             if (i != e.second)
             {
@@ -563,11 +567,11 @@ fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_si
             int oi = o->index(f);
 
             bool attached = false;
-            if (!Dt.is_infinite(f->vertex(e.second)) &&
+            if (!pdt.is_infinite(f->vertex(e.second)) &&
                 CGAL::side_of_bounded_circle(p1, p2,
                                              f->vertex(e.second)->point()) == CGAL::ON_BOUNDED_SIDE)
                 attached = true;
-            else if (!Dt.is_infinite(o->vertex(oi)) &&
+            else if (!pdt.is_infinite(o->vertex(oi)) &&
                      CGAL::side_of_bounded_circle(p1, p2,
                                                   o->vertex(oi)->point()) == CGAL::ON_BOUNDED_SIDE)
                 attached = true;
@@ -576,12 +580,12 @@ fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_si
 
             if (attached)
             {
-                if (Dt.is_infinite(f)){
+                if (pdt.is_infinite(f)){
 
                     s.value = simplices.find(simplex_from_face(o))->value;
 
                     }
-                else if (Dt.is_infinite(o)){
+                else if (pdt.is_infinite(o)){
                     s.value = simplices.find(simplex_from_face(f))->value;
 
                 }
@@ -598,7 +602,7 @@ fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_si
     }
 
     // vertices
-    for(auto cur = Dt.finite_vertices_begin(); cur != Dt.finite_vertices_end(); ++cur)
+    for(auto cur = pdt.finite_vertices_begin(); cur != pdt.finite_vertices_end(); ++cur)
     {
         Simplex2D s;
 
