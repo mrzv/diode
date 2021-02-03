@@ -51,6 +51,9 @@ to your ``~/.bashrc`` or ``~/.zshrc``.
 Usage
 -----
 
+NB: a remark below about `using exact computation <#exactness>`_. This issue is especially important when working with degenerate point sets
+(e.g., repeated copies of a fundamental domain in a periodic point set).
+
 See `examples/generate_alpha_shape.cpp <https://github.com/mrzv/diode/blob/master/examples/generate_alpha_shape.cpp>`_ and
 `examples/generate_weighted_alpha_shape.cpp <https://github.com/mrzv/diode/blob/master/examples/generate_weighted_alpha_shape.cpp>`_ for C++ examples.
 
