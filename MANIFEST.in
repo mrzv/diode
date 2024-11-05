@@ -1,15 +1,7 @@
-recursive-include . *
-recursive-exclude ./.hg *
-recursive-exclude ./.peru *
-recursive-exclude ./.git *
-recursive-exclude ./doc/_build *
-recursive-exclude ./build *
-recursive-exclude ./dist *
-recursive-exclude ./.pytest_cache *
-exclude .hgignore .hgsubtree ./tags
-recursive-exclude . *.orig
-recursive-exclude . */__pycache__/*
+graft bindings
+graft include
+graft examples
+graft ext
+graft tests
 
-exclude ./Pipfile* ./.build.yml ./Alpha_complex_3d.h
-exclude ./*.so
-
+include CMakeLists.txt
