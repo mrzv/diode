@@ -3,4 +3,4 @@ imports:
 
 git module pybind11:
     url: https://github.com/pybind/pybind11.git
-    rev: cf7d2e6f15be7622515a77466e84bd9414737680
+    rev: 75e48c5f959b4f0a49d8c664e059b6fb4b497102

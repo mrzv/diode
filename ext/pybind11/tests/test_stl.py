@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import pytest
 
+import env  # noqa: F401
 from pybind11_tests import ConstructorStats, UserType
 from pybind11_tests import stl as m
 
@@ -16,8 +19,8 @@ def test_vector(doc):
     assert m.load_bool_vector([True, False])
     assert m.load_bool_vector((True, False))
 
-    assert doc(m.cast_vector) == "cast_vector() -> List[int]"
-    assert doc(m.load_vector) == "load_vector(arg0: List[int]) -> bool"
+    assert doc(m.cast_vector) == "cast_vector() -> list[int]"
+    assert doc(m.load_vector) == "load_vector(arg0: list[int]) -> bool"
 
     # Test regression caused by 936: pointers to stl containers weren't castable
     assert m.cast_ptr_vector() == ["lvalue", "lvalue"]
@@ -39,8 +42,18 @@ def test_array(doc):
     assert m.load_array(lst)
     assert m.load_array(tuple(lst))
 
-    assert doc(m.cast_array) == "cast_array() -> List[int[2]]"
-    assert doc(m.load_array) == "load_array(arg0: List[int[2]]) -> bool"
+    assert doc(m.cast_array) == "cast_array() -> Annotated[list[int], FixedSize(2)]"
+    assert (
+        doc(m.load_array)
+        == "load_array(arg0: Annotated[list[int], FixedSize(2)]) -> bool"
+    )
+
+
+def test_array_no_default_ctor():
+    lst = m.NoDefaultCtorArray(3)
+    assert [e.val for e in lst.arr] == [13, 23]
+    lst.arr = m.NoDefaultCtorArray(4).arr
+    assert [e.val for e in lst.arr] == [14, 24]
 
 
 def test_valarray(doc):
@@ -50,8 +63,8 @@ def test_valarray(doc):
     assert m.load_valarray(lst)
     assert m.load_valarray(tuple(lst))
 
-    assert doc(m.cast_valarray) == "cast_valarray() -> List[int]"
-    assert doc(m.load_valarray) == "load_valarray(arg0: List[int]) -> bool"
+    assert doc(m.cast_valarray) == "cast_valarray() -> list[int]"
+    assert doc(m.load_valarray) == "load_valarray(arg0: list[int]) -> bool"
 
 
 def test_map(doc):
@@ -63,8 +76,8 @@ def test_map(doc):
     assert "key2" in d
     assert m.load_map(d)
 
-    assert doc(m.cast_map) == "cast_map() -> Dict[str, str]"
-    assert doc(m.load_map) == "load_map(arg0: Dict[str, str]) -> bool"
+    assert doc(m.cast_map) == "cast_map() -> dict[str, str]"
+    assert doc(m.load_map) == "load_map(arg0: dict[str, str]) -> bool"
 
 
 def test_set(doc):
@@ -75,8 +88,8 @@ def test_set(doc):
     assert m.load_set(s)
     assert m.load_set(frozenset(s))
 
-    assert doc(m.cast_set) == "cast_set() -> Set[str]"
-    assert doc(m.load_set) == "load_set(arg0: Set[str]) -> bool"
+    assert doc(m.cast_set) == "cast_set() -> set[str]"
+    assert doc(m.load_set) == "load_set(arg0: set[str]) -> bool"
 
 
 def test_recursive_casting():
@@ -300,7 +313,7 @@ def test_stl_pass_by_pointer(msg):
         msg(excinfo.value)
         == """
         stl_pass_by_pointer(): incompatible function arguments. The following argument types are supported:
-            1. (v: List[int] = None) -> List[int]
+            1. (v: list[int] = None) -> list[int]
 
         Invoked with:
     """
@@ -312,7 +325,7 @@ def test_stl_pass_by_pointer(msg):
         msg(excinfo.value)
         == """
         stl_pass_by_pointer(): incompatible function arguments. The following argument types are supported:
-            1. (v: List[int] = None) -> List[int]
+            1. (v: list[int] = None) -> list[int]
 
         Invoked with: None
     """
@@ -350,6 +363,7 @@ def test_function_with_string_and_vector_string_arg():
     assert m.func_with_string_or_vector_string_arg_overload("A") == 3
 
 
+@pytest.mark.skipif("env.GRAALPY", reason="Cannot reliably trigger GC")
 def test_stl_ownership():
     cstats = ConstructorStats.get(m.Placeholder)
     assert cstats.alive() == 0
@@ -367,7 +381,7 @@ def test_issue_1561():
     """check fix for issue #1561"""
     bar = m.Issue1561Outer()
     bar.list = [m.Issue1561Inner("bar")]
-    bar.list
+    assert bar.list
     assert bar.list[0].data == "bar"
 
 
@@ -376,3 +390,129 @@ def test_return_vector_bool_raw_ptr():
     v = m.return_vector_bool_raw_ptr()
     assert isinstance(v, list)
     assert len(v) == 4513
+
+
+@pytest.mark.parametrize(
+    ("fn", "offset"), [(m.pass_std_vector_int, 0), (m.pass_std_array_int_2, 1)]
+)
+def test_pass_std_vector_int(fn, offset):
+    assert fn([7, 13]) == 140 + offset
+    assert fn({6, 2}) == 116 + offset
+    assert fn({"x": 8, "y": 11}.values()) == 138 + offset
+    assert fn({3: None, 9: None}.keys()) == 124 + offset
+    assert fn(i for i in [4, 17]) == 142 + offset
+    assert fn(map(lambda i: i * 3, [8, 7])) == 190 + offset  # noqa: C417
+    with pytest.raises(TypeError):
+        fn({"x": 0, "y": 1})
+    with pytest.raises(TypeError):
+        fn({})
+
+
+def test_pass_std_vector_pair_int():
+    fn = m.pass_std_vector_pair_int
+    assert fn({1: 2, 3: 4}.items()) == 406
+    assert fn(zip([5, 17], [13, 9])) == 2222
+
+
+def test_list_caster_fully_consumes_generator_object():
+    def gen_invalid():
+        yield from [1, 2.0, 3]
+
+    gen_obj = gen_invalid()
+    with pytest.raises(TypeError):
+        m.pass_std_vector_int(gen_obj)
+    assert not tuple(gen_obj)
+
+
+def test_pass_std_set_int():
+    fn = m.pass_std_set_int
+    assert fn({3, 15}) == 254
+    assert fn({5: None, 12: None}.keys()) == 251
+    with pytest.raises(TypeError):
+        fn([])
+    with pytest.raises(TypeError):
+        fn({})
+    with pytest.raises(TypeError):
+        fn({}.values())
+    with pytest.raises(TypeError):
+        fn(i for i in [])
+
+
+def test_set_caster_dict_keys_failure():
+    dict_keys = {1: None, 2.0: None, 3: None}.keys()
+    # The asserts does not really exercise anything in pybind11, but if one of
+    # them fails in some future version of Python, the set_caster load
+    # implementation may need to be revisited.
+    assert tuple(dict_keys) == (1, 2.0, 3)
+    assert tuple(dict_keys) == (1, 2.0, 3)
+    with pytest.raises(TypeError):
+        m.pass_std_set_int(dict_keys)
+    assert tuple(dict_keys) == (1, 2.0, 3)
+
+
+class FakePyMappingMissingItems:
+    def __getitem__(self, _):
+        raise RuntimeError("Not expected to be called.")
+
+
+class FakePyMappingWithItems(FakePyMappingMissingItems):
+    def items(self):
+        return ((1, 3), (2, 4))
+
+
+class FakePyMappingBadItems(FakePyMappingMissingItems):
+    def items(self):
+        return ((1, 2), (3, "x"))
+
+
+class FakePyMappingItemsNotCallable(FakePyMappingMissingItems):
+    @property
+    def items(self):
+        return ((1, 2), (3, 4))
+
+
+class FakePyMappingItemsWithArg(FakePyMappingMissingItems):
+    def items(self, _):
+        return ((1, 2), (3, 4))
+
+
+class FakePyMappingGenObj(FakePyMappingMissingItems):
+    def __init__(self, gen_obj):
+        super().__init__()
+        self.gen_obj = gen_obj
+
+    def items(self):
+        yield from self.gen_obj
+
+
+def test_pass_std_map_int():
+    fn = m.pass_std_map_int
+    assert fn({1: 2, 3: 4}) == 4506
+    with pytest.raises(TypeError):
+        fn([])
+    assert fn(FakePyMappingWithItems()) == 3507
+    with pytest.raises(TypeError):
+        fn(FakePyMappingMissingItems())
+    with pytest.raises(TypeError):
+        fn(FakePyMappingBadItems())
+    with pytest.raises(TypeError):
+        fn(FakePyMappingItemsNotCallable())
+    with pytest.raises(TypeError):
+        fn(FakePyMappingItemsWithArg())
+
+
+@pytest.mark.parametrize(
+    ("items", "expected_exception"),
+    [
+        (((1, 2), (3, "x"), (4, 5)), TypeError),
+        (((1, 2), (3, 4, 5), (6, 7)), ValueError),
+    ],
+)
+def test_map_caster_fully_consumes_generator_object(items, expected_exception):
+    def gen_invalid():
+        yield from items
+
+    gen_obj = gen_invalid()
+    with pytest.raises(expected_exception):
+        m.pass_std_map_int(FakePyMappingGenObj(gen_obj))
+    assert not tuple(gen_obj)
