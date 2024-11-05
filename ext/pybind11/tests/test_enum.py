@@ -1,10 +1,13 @@
 # ruff: noqa: SIM201 SIM300 SIM202
+from __future__ import annotations
 
 import pytest
 
+import env  # noqa: F401
 from pybind11_tests import enums as m
 
 
+@pytest.mark.xfail("env.GRAALPY", reason="TODO should get fixed on GraalPy side")
 def test_unscoped_enum():
     assert str(m.UnscopedEnum.EOne) == "UnscopedEnum.EOne"
     assert str(m.UnscopedEnum.ETwo) == "UnscopedEnum.ETwo"
@@ -60,9 +63,7 @@ Members:
 
   ETwo : Docstring for ETwo
 
-  EThree : Docstring for EThree""".split(
-        "\n"
-    ):
+  EThree : Docstring for EThree""".split("\n"):
         assert docstring_line in m.UnscopedEnum.__doc__
 
     # Unscoped enums will accept ==/!= int comparisons
@@ -194,6 +195,7 @@ def test_implicit_conversion():
     assert repr(x) == "{<EMode.EFirstMode: 1>: 3, <EMode.ESecondMode: 2>: 4}"
 
 
+@pytest.mark.xfail("env.GRAALPY", reason="TODO should get fixed on GraalPy side")
 def test_binary_operators():
     assert int(m.Flags.Read) == 4
     assert int(m.Flags.Write) == 2
@@ -264,3 +266,8 @@ def test_docstring_signatures():
         for attr in enum_type.__dict__.values():
             # Issue #2623/PR #2637: Add argument names to enum_ methods
             assert "arg0" not in (attr.__doc__ or "")
+
+
+def test_str_signature():
+    for enum_type in [m.ScopedEnum, m.UnscopedEnum]:
+        assert enum_type.__str__.__doc__.startswith("__str__")

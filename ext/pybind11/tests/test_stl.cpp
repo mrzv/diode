@@ -59,7 +59,7 @@ struct visit_helper<boost::variant> {
 } // namespace PYBIND11_NAMESPACE
 #endif
 
-PYBIND11_MAKE_OPAQUE(std::vector<std::string, std::allocator<std::string>>);
+PYBIND11_MAKE_OPAQUE(std::vector<std::string, std::allocator<std::string>>)
 
 /// Issue #528: templated constructor
 struct TplCtorClass {
@@ -78,7 +78,7 @@ struct hash<TplCtorClass> {
 template <template <typename> class OptionalImpl, typename T>
 struct OptionalHolder {
     // NOLINTNEXTLINE(modernize-use-equals-default): breaks GCC 4.8
-    OptionalHolder(){};
+    OptionalHolder() {};
     bool member_initialized() const { return member && member->initialized; }
     OptionalImpl<T> member = T{};
 };
@@ -167,6 +167,14 @@ struct type_caster<ReferenceSensitiveOptional<T>>
 } // namespace detail
 } // namespace PYBIND11_NAMESPACE
 
+int pass_std_vector_int(const std::vector<int> &v) {
+    int zum = 100;
+    for (const int i : v) {
+        zum += 2 * i;
+    }
+    return zum;
+}
+
 TEST_SUBMODULE(stl, m) {
     // test_vector
     m.def("cast_vector", []() { return std::vector<int>{1}; });
@@ -193,6 +201,23 @@ TEST_SUBMODULE(stl, m) {
     m.def("cast_array", []() { return std::array<int, 2>{{1, 2}}; });
     m.def("load_array", [](const std::array<int, 2> &a) { return a[0] == 1 && a[1] == 2; });
 
+    struct NoDefaultCtor {
+        explicit constexpr NoDefaultCtor(int val) : val{val} {}
+        int val;
+    };
+
+    struct NoDefaultCtorArray {
+        explicit constexpr NoDefaultCtorArray(int i)
+            : arr{{NoDefaultCtor(10 + i), NoDefaultCtor(20 + i)}} {}
+        std::array<NoDefaultCtor, 2> arr;
+    };
+
+    // test_array_no_default_ctor
+    py::class_<NoDefaultCtor>(m, "NoDefaultCtor").def_readonly("val", &NoDefaultCtor::val);
+    py::class_<NoDefaultCtorArray>(m, "NoDefaultCtorArray")
+        .def(py::init<int>())
+        .def_readwrite("arr", &NoDefaultCtorArray::arr);
+
     // test_valarray
     m.def("cast_valarray", []() { return std::valarray<int>{1, 4, 9}; });
     m.def("load_valarray", [](const std::valarray<int> &v) {
@@ -217,9 +242,8 @@ TEST_SUBMODULE(stl, m) {
     // NB: map and set keys are `const`, so while we technically do move them (as `const Type &&`),
     // casters don't typically do anything with that, which means they fall to the `const Type &`
     // caster.
-    m.def("cast_rv_map", []() {
-        return std::unordered_map<std::string, RValueCaster>{{"a", RValueCaster{}}};
-    });
+    m.def("cast_rv_map",
+          []() { return std::unordered_map<std::string, RValueCaster>{{"a", RValueCaster{}}}; });
     m.def("cast_rv_nested", []() {
         std::vector<std::array<std::list<std::unordered_map<std::string, RValueCaster>>, 2>> v;
         v.emplace_back();           // add an array
@@ -497,8 +521,7 @@ TEST_SUBMODULE(stl, m) {
     });
 
     // test_stl_pass_by_pointer
-    m.def(
-        "stl_pass_by_pointer", [](std::vector<int> *v) { return *v; }, "v"_a = nullptr);
+    m.def("stl_pass_by_pointer", [](std::vector<int> *v) { return *v; }, "v"_a = nullptr);
 
     // #1258: pybind11/stl.h converts string to vector<string>
     m.def("func_with_string_or_vector_string_arg_overload",
@@ -548,4 +571,30 @@ TEST_SUBMODULE(stl, m) {
         []() { return new std::vector<bool>(4513); },
         // Without explicitly specifying `take_ownership`, this function leaks.
         py::return_value_policy::take_ownership);
+
+    m.def("pass_std_vector_int", pass_std_vector_int);
+    m.def("pass_std_vector_pair_int", [](const std::vector<std::pair<int, int>> &v) {
+        int zum = 0;
+        for (const auto &ij : v) {
+            zum += ij.first * 100 + ij.second;
+        }
+        return zum;
+    });
+    m.def("pass_std_array_int_2", [](const std::array<int, 2> &a) {
+        return pass_std_vector_int(std::vector<int>(a.begin(), a.end())) + 1;
+    });
+    m.def("pass_std_set_int", [](const std::set<int> &s) {
+        int zum = 200;
+        for (const int i : s) {
+            zum += 3 * i;
+        }
+        return zum;
+    });
+    m.def("pass_std_map_int", [](const std::map<int, int> &m) {
+        int zum = 500;
+        for (const auto &p : m) {
+            zum += p.first * 1000 + p.second;
+        }
+        return zum;
+    });
 }
