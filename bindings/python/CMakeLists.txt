@@ -5,4 +5,4 @@ else                        ()
 endif                       ()
 
 pybind11_add_module         (diode diode.cpp)
-target_link_libraries       (diode PUBLIC ${CGAL_LIBRARY} ${GMP_LIBRARIES} ${MPFR_LIBRARIES})
+target_link_libraries       (diode PUBLIC CGAL::CGAL)

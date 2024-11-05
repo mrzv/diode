@@ -9,9 +9,7 @@ endif                       (NOT CMAKE_BUILD_TYPE)
 
 include_directories         (include)
 
-find_package                (CGAL)
-include                     (${CGAL_USE_FILE})
-include_directories         (${CGAL_INCLUDE_DIRS})
+find_package                (CGAL REQUIRED)
 
 # CGAL 4.9.1 removes -O3 from the release flags. I want it back.
 if                          (${CMAKE_BUILD_TYPE} STREQUAL "Release")
