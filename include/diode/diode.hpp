@@ -1,6 +1,7 @@
 #include <sstream>
 #include <unordered_map>
 #include <algorithm>
+#include <array>
 #include <CGAL/Alpha_shape_vertex_base_3.h>
 
 namespace diode
@@ -218,6 +219,28 @@ fill_periodic_alpha_shapes(const Points& points, const SimplexCallback& add_simp
     else
         throw std::runtime_error("Cannot convert to 1-sheeted covering");
     ASWrapper::fill_filtration(pdt, points_map, add_simplex);
+}
+
+template<bool exact>
+template<class Points>
+std::array<typename Points::Real, 3>
+diode::AlphaShapes<exact>::
+circumcenter(const Points& points)
+{
+    using K          = detail::Kernel<exact>;
+    using Point      = CGAL::Point_3<K>;
+    using Real       = typename Points::Real;
+
+    Point p_0(points(0,0), points(0,1), points(0,2));
+    Point p_1(points(1,0), points(1,1), points(1,2));
+    Point p_2(points(2,0), points(2,1), points(2,2));
+    Point p_3(points(3,0), points(3,1), points(3,2));
+
+    auto center = CGAL::circumcenter(p_0,p_1,p_2,p_3);
+
+    return std::array<Real, 3> { Real(CGAL::to_double(center[0])),
+                                 Real(CGAL::to_double(center[1])),
+                                 Real(CGAL::to_double(center[2])) };
 }
 
 #if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)

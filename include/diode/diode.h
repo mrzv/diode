@@ -48,6 +48,9 @@ struct AlphaShapes
     static void fill_weighted_periodic_alpha_shapes(const Points& points, const SimplexCallback& add_simplex,
                                                     std::array<double, 3> from, std::array<double, 3> to);
 #endif
+
+    template<class Points>
+    static std::array<typename Points::Real, 3> circumcenter(const Points& points);
 };
 
 template<class Points, class SimplexCallback>

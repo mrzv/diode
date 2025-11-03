@@ -1,5 +1,5 @@
+cmake_minimum_required      (VERSION 3.25)
 project                     (DioDe)
-cmake_minimum_required      (VERSION 3.9)
 
 # Default to Release
 if                          (NOT CMAKE_BUILD_TYPE)

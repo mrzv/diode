@@ -133,6 +133,13 @@ shape for a weighted point set on a periodic cube::
     >>> weighted_points[:,3] /= 64
     >>> simplices_weighted_periodic = diode.fill_weighted_periodic_alpha_shapes(weighted_points)
 
+``diode.circumcenter(...)`` can be used to compute the circumcenter of a tetrahedron in 3D::
+
+    >>> tet = np.random.random((4,3))
+    >>> center = diode.circumcenter(tet)
+    >>> print(center)
+    [-0.00752673  0.14213101  1.0060982 ]
+
 
 Exactness
 ~~~~~~~~~

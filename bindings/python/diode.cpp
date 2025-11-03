@@ -9,6 +9,8 @@ namespace py = pybind11;
 template<class T>
 struct ArrayWrapper
 {
+    using Real = T;
+
             ArrayWrapper(const py::array_t<T>& a_):
                 a(a_)           {}
 
@@ -220,6 +222,37 @@ fill_weighted_periodic_alpha_shape(py::array a, bool exact, std::array<double,3>
 }
 #endif
 
+py::array
+circumcenter(py::array a, bool exact)
+{
+    if (a.ndim() != 2)
+        throw std::runtime_error("Unknown input dimension: can only process 2D arrays");
+
+    if (a.shape()[0] != 4 || a.shape()[1] != 3)
+        throw std::runtime_error("Expected 4 points in 3D");
+
+    if (a.dtype().is(py::dtype::of<float>()))
+    {
+        std::array<float,3> center;
+        if (exact)
+            center = diode::AlphaShapes<true>::circumcenter(ArrayWrapper<float>(a));
+        else
+            center = diode::AlphaShapes<false>::circumcenter(ArrayWrapper<float>(a));
+        return py::array_t<float>(3, center.data());
+    }
+    else if (a.dtype().is(py::dtype::of<double>()))
+    {
+        std::array<double,3> center;
+        if (exact)
+            center = diode::AlphaShapes<true>::circumcenter(ArrayWrapper<double>(a));
+        else
+            center = diode::AlphaShapes<false>::circumcenter(ArrayWrapper<double>(a));
+        return py::array_t<double>(3, center.data());
+    }
+    else
+        throw std::runtime_error("Unknown array dtype");
+}
+
 
 PYBIND11_MODULE(diode, m)
 {
@@ -244,5 +277,6 @@ PYBIND11_MODULE(diode, m)
           "to"_a   = std::array<double,3> {1.,1.,1.},
           "returns (sorted) alpha shape filtration of the weighted input points on a periodic domain");
 #endif
+    m.def("circumcenter", &circumcenter, "points"_a, "exact"_a = false, "returns circumcenter of the intput points");
 }
 
