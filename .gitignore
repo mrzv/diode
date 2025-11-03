@@ -1,0 +1,7 @@
+build/
+dist/
+*.bak
+.peru/
+diode.*.so
+diode.egg-info/
+tags
