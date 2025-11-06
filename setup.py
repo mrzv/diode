@@ -59,7 +59,7 @@ class CMakeBuild(build_ext):
 
 setup(
     name='diode',
-    version='1.0.3',
+    version='1.1.0',
     author='Dmitriy Morozov',
     author_email='dmitriy@mrzv.org',
     description='alpha shape generator using CGAL',
