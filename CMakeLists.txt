@@ -18,7 +18,5 @@ endif                       ()
 
 set                         (CMAKE_CXX_STANDARD 14)
 
-add_subdirectory            (ext/pybind11)
-
 add_subdirectory            (examples)
 add_subdirectory            (bindings/python)
