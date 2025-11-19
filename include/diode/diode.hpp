@@ -234,9 +234,16 @@ circumcenter(const Points& points)
     Point p_0(points(0,0), points(0,1), points(0,2));
     Point p_1(points(1,0), points(1,1), points(1,2));
     Point p_2(points(2,0), points(2,1), points(2,2));
-    Point p_3(points(3,0), points(3,1), points(3,2));
 
-    auto center = CGAL::circumcenter(p_0,p_1,p_2,p_3);
+    Point center;
+
+    if (points.size() == 3)
+        center = CGAL::circumcenter(p_0,p_1,p_2);
+    else     // points.size() == 4
+    {
+        Point p_3(points(3,0), points(3,1), points(3,2));
+        center = CGAL::circumcenter(p_0,p_1,p_2,p_3);
+    }
 
     return std::array<Real, 3> { Real(CGAL::to_double(center[0])),
                                  Real(CGAL::to_double(center[1])),

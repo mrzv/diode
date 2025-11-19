@@ -228,8 +228,8 @@ circumcenter(py::array a, bool exact)
     if (a.ndim() != 2)
         throw std::runtime_error("Unknown input dimension: can only process 2D arrays");
 
-    if (a.shape()[0] != 4 || a.shape()[1] != 3)
-        throw std::runtime_error("Expected 4 points in 3D");
+    if (!(a.shape()[0] == 3 || a.shape()[0] == 4) || a.shape()[1] != 3)
+        throw std::runtime_error("Expected 3 or 4 points in 3D");
 
     if (a.dtype().is(py::dtype::of<float>()))
     {
