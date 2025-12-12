@@ -31,3 +31,9 @@ requires-python = ">= 3.12"
 Homepage = "https://github.com/mrzv/diode"
 Repository = "https://github.com/mrzv/diode.git"
 Issues = "https://github.com/mrzv/diode/issues"
+
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" },
+              { file = "bindings/**" },
+              { file = "include/**" },
+              { file = "CMakeLists.txt" }]
