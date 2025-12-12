@@ -37,3 +37,9 @@ cache-keys = [{ file = "pyproject.toml" },
               { file = "bindings/**" },
               { file = "include/**" },
               { file = "CMakeLists.txt" }]
+
+[dependency-groups]
+test = [
+    "numpy>=2.3.5",
+    "pytest>=9.0.2",
+]
