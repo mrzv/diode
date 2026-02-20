@@ -330,7 +330,7 @@ circumcenter(py::array a, bool exact)
 
 PYBIND11_MODULE(diode, m)
 {
-    m.doc() = "DioDe pythonn bindings";
+    m.doc() = "DioDe python bindings";
 
     using namespace pybind11::literals;
     m.def("fill_alpha_shapes",  &fill_alpha_shape,
