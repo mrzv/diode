@@ -29,11 +29,26 @@
 namespace diode
 {
 
+// SimplexCallback contract:
+//   - For functions WITHOUT _with_attachment, the callback is invoked as
+//         add_simplex(sigma_vertices, alpha)
+//     where sigma_vertices is a std::array<unsigned, D> for D in {1,2,3,4}
+//     and alpha is a double (the filtration value).
+//   - For functions WITH _with_attachment, the callback is invoked as
+//         add_simplex(sigma_vertices, alpha, tau_vertices)
+//     where tau_vertices is a std::array<unsigned, D'> for D' in {1,2,3,4}
+//     listing the vertices of a simplex tau whose own squared circumradius
+//     (smallest enclosing sphere through tau's own vertices) equals alpha.
+//     For Gabriel sigma, tau == sigma. For non-Gabriel sigma, tau is a Gabriel
+//     coface of sigma.
 template<bool exact = false>
 struct AlphaShapes
 {
     template<class Points, class SimplexCallback>
     static void fill_alpha_shapes(const Points& points, const SimplexCallback& add_simplex);
+
+    template<class Points, class SimplexCallback>
+    static void fill_alpha_shapes_with_attachment(const Points& points, const SimplexCallback& add_simplex);
 
     template<class Points, class SimplexCallback>
     static void fill_weighted_alpha_shapes(const Points& points, const SimplexCallback& add_simplex);
@@ -55,6 +70,9 @@ struct AlphaShapes
 
 template<class Points, class SimplexCallback>
 void fill_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex);
+
+template<class Points, class SimplexCallback>
+void fill_alpha_shapes2d_with_attachment(const Points& points, const SimplexCallback& add_simplex);
 
 template<class Points, class SimplexCallback>
 void fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex,
