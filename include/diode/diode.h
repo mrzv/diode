@@ -114,6 +114,14 @@ template<bool exact, class Points, class SimplexCallback>
 void fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex,
                                 std::array<double, 2> from, std::array<double, 2> to);
 
+// Faster equivalent of fill_periodic_alpha_shapes2d: same periodic geometry and
+// Gabriel test, but caches face circumradii in a hash map keyed by vertex set
+// (first-wins, matching the std::set dedup) instead of a std::set with per-edge
+// recomputation. Produces the same (simplex, alpha) set. Emitted unsorted.
+template<bool exact, class Points, class SimplexCallback>
+void fill_periodic_alpha_shapes2d_direct(const Points& points, const SimplexCallback& add_simplex,
+                                std::array<double, 2> from, std::array<double, 2> to);
+
 
 
 }

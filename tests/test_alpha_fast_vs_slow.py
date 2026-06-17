@@ -118,3 +118,53 @@ def test_fast_matches_slow_with_attachment(dim, n, exact):
 
 def test_slow_function_exists():
     assert hasattr(diode, "fill_alpha_shapes_slow")
+    assert hasattr(diode, "fill_periodic_alpha_shapes_slow")
+
+
+# ---- periodic 2D: fast (Delaunay-direct) vs slow (std::set) -----------------
+# Periodic alpha picks an arbitrary periodic *offset representative* for a few
+# near-degenerate edges, so a handful of alpha values can differ slightly --
+# the old path is itself non-deterministic there. We therefore require the
+# combinatorics (simplex set) to match exactly and the values to agree up to a
+# small, bounded number of such edges. (We deliberately do NOT "fix" diode's
+# existing periodic Gabriel test.)
+@pytest.mark.parametrize("n", [20, 100, 500, 1500])
+@pytest.mark.parametrize("exact", EXACTS)
+def test_periodic_2d_fast_vs_slow_values(n, exact):
+    rng = np.random.default_rng(5000 * n + int(exact))
+    pts = rng.random((n, 2))
+    fast = to_value_dict(diode.fill_periodic_alpha_shapes(pts, exact, [0., 0.], [1., 1.]))
+    slow = to_value_dict(diode.fill_periodic_alpha_shapes_slow(pts, exact, [0., 0.], [1., 1.]))
+    assert set(fast) == set(slow), "periodic simplex sets differ"
+    diffs = np.array([abs(fast[k] - slow[k]) for k in fast])
+    n_differ = int((diffs > 1e-7).sum())
+    assert n_differ <= max(3, len(diffs) // 100), \
+        f"{n_differ}/{len(diffs)} periodic values differ -- more than offset ambiguity explains"
+    assert diffs.max(initial=0.0) < 1e-2, "periodic value difference too large"
+
+
+def _gudhi_diagram(filtration, dim, gudhi):
+    """Persistence diagram (per dimension) of an arbitrary (verts, value) filtration."""
+    st = gudhi.SimplexTree()
+    for verts, val in filtration:
+        st.insert([int(v) for v in verts], float(val))
+    st.make_filtration_non_decreasing()
+    st.compute_persistence(persistence_dim_max=True)
+    d = np.asarray(st.persistence_intervals_in_dimension(dim), dtype=float)
+    return d[np.isfinite(d).all(axis=1)] if d.size else d   # finite bars only
+
+
+@pytest.mark.parametrize("n", [100, 500, 1500])
+def test_periodic_2d_fast_vs_slow_diagram(n):
+    # Optional, stronger check: persistence diagrams agree under bottleneck
+    # distance. Skipped if no PD library is installed (diode itself does not
+    # depend on one).
+    gudhi = pytest.importorskip("gudhi")
+    rng = np.random.default_rng(9000 + n)
+    pts = rng.random((n, 2))
+    fast = diode.fill_periodic_alpha_shapes(pts, False, [0., 0.], [1., 1.])
+    slow = diode.fill_periodic_alpha_shapes_slow(pts, False, [0., 0.], [1., 1.])
+    for d in (0, 1):
+        bd = gudhi.bottleneck_distance(_gudhi_diagram(fast, d, gudhi),
+                                       _gudhi_diagram(slow, d, gudhi))
+        assert bd < 1e-2, f"periodic dim-{d} bottleneck distance {bd} too large"

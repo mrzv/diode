@@ -1330,6 +1330,104 @@ fill_alpha_shapes2d_with_attachment(const Points& points, const SimplexCallback&
 template<bool exact, class Points, class SimplexCallback>
 void
 diode::
+fill_periodic_alpha_shapes2d_direct(const Points& points, const SimplexCallback& add_simplex, std::array<double, 2> from, std::array<double, 2> to)
+{
+    using K             = detail::Kernel<exact>;
+    using GT            = CGAL::Periodic_2_Delaunay_triangulation_traits_2<K>;
+    using PDelaunay2D   = CGAL::Periodic_2_Delaunay_triangulation_2<GT>;
+    using Vertex_handle = typename PDelaunay2D::Vertex_handle;
+    using Point         = typename PDelaunay2D::Point;
+    using Face_handle   = typename PDelaunay2D::Face_handle;
+    using Iso_rectangle = typename PDelaunay2D::Iso_rectangle;
+
+    using ASPointMap = std::unordered_map<Vertex_handle, unsigned>;
+
+    Iso_rectangle domain(from[0], from[1], to[0], to[1]);
+    PDelaunay2D pdt(domain);
+    ASPointMap point_map;
+    for (unsigned i = 0; i < points.size(); ++i)
+        point_map[pdt.insert(Point(points(i, 0), points(i, 1)))] = i;
+
+    if (pdt.is_triangulation_in_1_sheet())
+        pdt.convert_to_1_sheeted_covering();
+    else
+        throw std::runtime_error("Cannot convert to 1-sheeted covering");
+
+    auto sq = [](auto&&... ps) { return detail::to_floating_point(CGAL::squared_radius(ps...)); };
+
+    struct Key3 { unsigned a, b, c; bool operator==(const Key3& o) const { return a == o.a && b == o.b && c == o.c; } };
+    struct Key3Hash { std::size_t operator()(const Key3& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; h = h * 1000003u ^ k.c; return h; } };
+    auto key3 = [](unsigned a, unsigned b, unsigned c) { if (a > b) std::swap(a, b); if (b > c) std::swap(b, c); if (a > b) std::swap(a, b); return Key3{a, b, c}; };
+    struct Key2 { unsigned a, b; bool operator==(const Key2& o) const { return a == o.a && b == o.b; } };
+    struct Key2Hash { std::size_t operator()(const Key2& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; return h; } };
+    auto key2 = [](unsigned a, unsigned b) { if (a > b) std::swap(a, b); return Key2{a, b}; };
+
+    auto face_key = [&](Face_handle f) {
+        return key3(point_map[f->vertex(0)], point_map[f->vertex(1)], point_map[f->vertex(2)]);
+    };
+
+    // faces: alpha = squared circumradius of the offset-corrected triangle;
+    // dedup by vertex set (first-wins), matching the std::set-based reference.
+    std::unordered_map<Key3, double, Key3Hash> face_value;
+    for (auto cur = pdt.finite_faces_begin(); cur != pdt.finite_faces_end(); ++cur) {
+        auto T = pdt.triangle(pdt.periodic_triangle(cur));
+        double v = sq(T.vertex(0), T.vertex(1), T.vertex(2));
+        face_value.emplace(face_key(cur), v);
+    }
+    for (const auto& kv : face_value)
+        add_simplex(std::array<unsigned, 3>{ kv.first.a, kv.first.b, kv.first.c }, kv.second);
+
+    // edges: non-attached -> own circumradius; attached -> min over the two
+    // incident faces (periodic triangulations have no infinite faces).
+    std::unordered_map<Key2, double, Key2Hash> edge_value;
+    for (auto cur = pdt.finite_edges_begin(); cur != pdt.finite_edges_end(); ++cur) {
+        auto e = *cur;
+        Face_handle f = e.first;
+        int ei = e.second;
+        auto t = pdt.triangle(f);
+        Point ep[2];
+        unsigned idx[2];
+        int j = 0;
+        for (int i = 0; i < 3; ++i)
+            if (i != ei) { ep[j] = t.vertex(i); idx[j] = point_map[f->vertex(i)]; ++j; }
+        const Point& p1 = ep[0];
+        const Point& p2 = ep[1];
+
+        Face_handle o = f->neighbor(ei);
+        bool attached = false;
+        if (CGAL::side_of_bounded_circle(p1, p2, f->vertex(ei)->point()) == CGAL::ON_BOUNDED_SIDE) {
+            attached = true;
+        } else {
+            int oi = o->index(f);
+            if (CGAL::side_of_bounded_circle(p1, p2, o->vertex(oi)->point()) == CGAL::ON_BOUNDED_SIDE)
+                attached = true;
+        }
+
+        double v;
+        if (!attached) v = sq(p1, p2);
+        else           v = std::min(face_value.at(face_key(f)), face_value.at(face_key(o)));
+        edge_value.emplace(key2(idx[0], idx[1]), v);
+    }
+    for (const auto& kv : edge_value)
+        add_simplex(std::array<unsigned, 2>{ kv.first.a, kv.first.b }, kv.second);
+
+    // vertices: alpha 0 (dedup by index; each input point is one canonical vertex)
+    std::vector<char> seen_v(points.size(), 0);
+    for (auto cur = pdt.finite_vertices_begin(); cur != pdt.finite_vertices_end(); ++cur) {
+        for (int i = 0; i < 3; ++i) {
+            auto vh = cur->face()->vertex(i);
+            if (vh != Vertex_handle() && vh->point() == cur->point()) {
+                unsigned idx = point_map[vh];
+                if (idx < seen_v.size() && !seen_v[idx]) { seen_v[idx] = 1; add_simplex(std::array<unsigned, 1>{ idx }, 0.0); }
+                break;
+            }
+        }
+    }
+}
+
+template<bool exact, class Points, class SimplexCallback>
+void
+diode::
 fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex,std::array<double, 2> from, std::array<double, 2> to)
 {
     using K             = detail::Kernel<exact>;

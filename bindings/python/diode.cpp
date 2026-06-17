@@ -353,8 +353,12 @@ fill_weighted_alpha_shape(py::array a, bool exact, bool with_attachment)
         throw std::runtime_error("Can only handle 3D alpha shapes (input must be a 4-column array: coordinates + weight)");
 }
 
+// Slow == true selects the reference 2D periodic path (std::set); Slow == false
+// the fast Delaunay-direct one. 3D periodic still uses CGAL::Alpha_shape_3 for
+// both (no direct 3D periodic path yet).
+template<bool Slow>
 py::object
-fill_periodic_alpha_shape(py::array a, bool exact, std::vector<double> from_, std::vector<double> to_, bool with_attachment)
+fill_periodic_alpha_shape_impl(py::array a, bool exact, std::vector<double> from_, std::vector<double> to_, bool with_attachment)
 {
     if (with_attachment)
     {
@@ -362,61 +366,53 @@ fill_periodic_alpha_shape(py::array a, bool exact, std::vector<double> from_, st
                         "with_attachment is not yet supported for periodic alpha shapes");
         throw py::error_already_set();
     }
-
     if (a.ndim() != 2)
         throw std::runtime_error("Unknown input dimension: can only process 2D arrays");
+    auto cols = a.shape()[1];
+    if (cols != 2 && cols != 3)
+        throw std::runtime_error("Can only handle 2D or 3D alpha shapes");
+    bool is_float  = a.dtype().is(py::dtype::of<float>());
+    bool is_double = a.dtype().is(py::dtype::of<double>());
+    if (!is_float && !is_double)
+        throw std::runtime_error("Unknown array dtype");
 
-    if (a.shape()[1] == 3)
+    AddSimplex::Simplices f;
+    if (cols == 3)
     {
-        std::array<double,3> from { from_[0], from_[1], from_[2] },
-                             to   { to_[0],   to_[1],   to_[2]   };
-
-        if (a.dtype().is(py::dtype::of<float>()))
-        {
-            AddSimplex::Simplices filtration;
-            if (exact)
-                diode::AlphaShapes<true>::fill_periodic_alpha_shapes(ArrayWrapper<float>(a), AddSimplex(&filtration), from, to);
-            else
-                diode::AlphaShapes<false>::fill_periodic_alpha_shapes(ArrayWrapper<float>(a), AddSimplex(&filtration), from, to);
-            return py::cast(filtration);
-        }
-        else if (a.dtype().is(py::dtype::of<double>()))
-        {
-            AddSimplex::Simplices filtration;
-            if (exact)
-                diode::AlphaShapes<true>::fill_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex(&filtration), from, to);
-            else
-                diode::AlphaShapes<false>::fill_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex(&filtration), from, to);
-            return py::cast(filtration);
-        }
-        else
-            throw std::runtime_error("Unknown array dtype");
-    }
-    else if (a.shape()[1] == 2)
-    {
-        std::array<double,2> from { from_[0], from_[1] },
-                             to   { to_[0],   to_[1]   };
-
-        AddSimplex::Simplices filtration;
-        if (a.dtype().is(py::dtype::of<float>()))
-        {
-            if (exact) diode::fill_periodic_alpha_shapes2d<true >(ArrayWrapper<float>(a), AddSimplex(&filtration),from,to);
-            else       diode::fill_periodic_alpha_shapes2d<false>(ArrayWrapper<float>(a), AddSimplex(&filtration),from,to);
-        }
-        else if (a.dtype().is(py::dtype::of<double>()))
-        {
-            if (exact) diode::fill_periodic_alpha_shapes2d<true >(ArrayWrapper<double>(a), AddSimplex(&filtration),from,to);
-            else       diode::fill_periodic_alpha_shapes2d<false>(ArrayWrapper<double>(a), AddSimplex(&filtration),from,to);
-        }
-        else
-            throw std::runtime_error("Unknown array dtype");
-
-        sort_filtration(filtration);
-        return py::cast(filtration);
+        std::array<double,3> from { from_[0], from_[1], from_[2] }, to { to_[0], to_[1], to_[2] };
+        auto run = [&](auto etag) {
+            constexpr bool E = decltype(etag)::value;
+            if (is_float) diode::AlphaShapes<E>::fill_periodic_alpha_shapes(ArrayWrapper<float >(a), AddSimplex(&f), from, to);
+            else          diode::AlphaShapes<E>::fill_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex(&f), from, to);
+        };
+        if (exact) run(std::true_type{}); else run(std::false_type{});
     }
     else
-        throw std::runtime_error("Can only handle 2D or 3D alpha shapes");
+    {
+        std::array<double,2> from { from_[0], from_[1] }, to { to_[0], to_[1] };
+        auto run = [&](auto etag) {
+            constexpr bool E = decltype(etag)::value;
+            if constexpr (Slow) {
+                if (is_float) diode::fill_periodic_alpha_shapes2d<E>(ArrayWrapper<float >(a), AddSimplex(&f), from, to);
+                else          diode::fill_periodic_alpha_shapes2d<E>(ArrayWrapper<double>(a), AddSimplex(&f), from, to);
+            } else {
+                if (is_float) diode::fill_periodic_alpha_shapes2d_direct<E>(ArrayWrapper<float >(a), AddSimplex(&f), from, to);
+                else          diode::fill_periodic_alpha_shapes2d_direct<E>(ArrayWrapper<double>(a), AddSimplex(&f), from, to);
+            }
+        };
+        if (exact) run(std::true_type{}); else run(std::false_type{});
+    }
+    sort_filtration(f);
+    return py::cast(f);
 }
+
+py::object
+fill_periodic_alpha_shape(py::array a, bool exact, std::vector<double> from_, std::vector<double> to_, bool with_attachment)
+{ return fill_periodic_alpha_shape_impl<false>(a, exact, from_, to_, with_attachment); }
+
+py::object
+fill_periodic_alpha_shape_slow(py::array a, bool exact, std::vector<double> from_, std::vector<double> to_, bool with_attachment)
+{ return fill_periodic_alpha_shape_impl<true>(a, exact, from_, to_, with_attachment); }
 
 #if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
 py::object
@@ -543,6 +539,13 @@ PYBIND11_MODULE(diode, m)
           "to"_a   = std::vector<double> {1.,1.,1.},
           "with_attachment"_a = false,
           "returns (sorted) alpha shape filtration of the input points on a periodic domain (with_attachment=True is not yet supported)");
+    m.def("fill_periodic_alpha_shapes_slow",  &fill_periodic_alpha_shape_slow,
+          "data"_a, "exact"_a = false,
+          "from"_a = std::vector<double> {0.,0.,0.},
+          "to"_a   = std::vector<double> {1.,1.,1.},
+          "with_attachment"_a = false,
+          "Reference periodic alpha filtration kept for testing: 2D uses the\n"
+          "std::set-based path (3D uses CGAL::Alpha_shape_3, same as the fast one).");
 #if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
     m.def("fill_weighted_periodic_alpha_shapes",  &fill_weighted_periodic_alpha_shape,
           "data"_a, "exact"_a = false,
