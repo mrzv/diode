@@ -8,6 +8,8 @@
 
 #include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
 #include <CGAL/Delaunay_triangulation_3.h>
+#include <CGAL/Triangulation_vertex_base_with_info_3.h>
+#include <CGAL/Triangulation_cell_base_with_info_3.h>
 #include <CGAL/Regular_triangulation_3.h>
 #include <CGAL/Periodic_3_Delaunay_triangulation_traits_3.h>
 #include <CGAL/Periodic_3_Delaunay_triangulation_3.h>
@@ -46,6 +48,15 @@ struct AlphaShapes
 {
     template<class Points, class SimplexCallback>
     static void fill_alpha_shapes(const Points& points, const SimplexCallback& add_simplex);
+
+    // Faster equivalent of fill_alpha_shapes for 3D unweighted alpha shapes: builds
+    // a plain Delaunay_triangulation_3 (vertex index stored in vertex info, O(1)
+    // lookup) and assigns alpha = squared circumradius directly via Edelsbrunner's
+    // algorithm (is_Gabriel + min-over-cofaces), instead of constructing the full
+    // CGAL::Alpha_shape_3 spectrum. Produces the same (simplex, alpha) set. Simplices
+    // are emitted unsorted; the caller sorts if a filtration order is needed.
+    template<class Points, class SimplexCallback>
+    static void fill_alpha_shapes_direct(const Points& points, const SimplexCallback& add_simplex);
 
     template<class Points, class SimplexCallback>
     static void fill_alpha_shapes_with_attachment(const Points& points, const SimplexCallback& add_simplex);

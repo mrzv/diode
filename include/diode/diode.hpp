@@ -361,6 +361,126 @@ template<bool exact>
 template<class Points, class SimplexCallback>
 void
 diode::AlphaShapes<exact>::
+fill_alpha_shapes_direct(const Points& points, const SimplexCallback& add_simplex)
+{
+    using K     = detail::Kernel<exact>;
+    using Vb    = CGAL::Triangulation_vertex_base_with_info_3<unsigned, K>;
+    using Cb    = CGAL::Triangulation_cell_base_with_info_3<double, K>;
+    using TDS   = CGAL::Triangulation_data_structure_3<Vb, Cb>;
+    using DT    = CGAL::Delaunay_triangulation_3<K, TDS, CGAL::Fast_location>;
+    using Point = typename K::Point_3;
+
+    // Bulk-insert points carrying their original index in the vertex info, so we
+    // never need a Point->index map: vertex->info() is an O(1) lookup.
+    DT dt;
+    {
+        std::vector<std::pair<Point, unsigned>> pts;
+        pts.reserve(points.size());
+        for (unsigned i = 0; i < points.size(); ++i)
+            pts.emplace_back(Point(points(i, 0), points(i, 1), points(i, 2)), i);
+        dt.insert(pts.begin(), pts.end());   // spatial-sort accelerated
+    }
+
+    // Respect `exact`: for the exact (EPECK) kernel, to_floating_point forces
+    // CGAL::exact() before converting; for the inexact (EPICK) kernel its FT is
+    // double and this is an identity (no overhead). Same convention as the rest
+    // of diode (see detail::to_floating_point and the Alpha_shape_3 path).
+    auto sq = [](auto&&... ps) { return detail::to_floating_point(CGAL::squared_radius(ps...)); };
+
+    // packed key over sorted vertex indices for the per-facet alpha map (no
+    // per-simplex allocation, unlike a std::vector key)
+    struct Key3 {
+        unsigned a, b, c;
+        bool operator==(const Key3& o) const { return a == o.a && b == o.b && c == o.c; }
+    };
+    struct Key3Hash {
+        std::size_t operator()(const Key3& k) const
+        {
+            std::size_t h = k.a;
+            h = h * 1000003u ^ k.b;
+            h = h * 1000003u ^ k.c;
+            return h;
+        }
+    };
+    auto key3 = [](unsigned a, unsigned b, unsigned c) {
+        if (a > b) std::swap(a, b);
+        if (b > c) std::swap(b, c);
+        if (a > b) std::swap(a, b);
+        return Key3{a, b, c};
+    };
+
+    // facet vertex indices (the 3 vertices of facet (cell, i) are vertices != i)
+    auto facet_idx = [](typename DT::Cell_handle c, int i) {
+        return std::array<unsigned, 3>{ c->vertex((i + 1) & 3)->info(),
+                                        c->vertex((i + 2) & 3)->info(),
+                                        c->vertex((i + 3) & 3)->info() };
+    };
+
+    // dim 3 (tetrahedra): alpha = squared circumradius; stash on cell info for facets
+    for (auto cit = dt.finite_cells_begin(); cit != dt.finite_cells_end(); ++cit) {
+        double a = sq(cit->vertex(0)->point(), cit->vertex(1)->point(),
+                      cit->vertex(2)->point(), cit->vertex(3)->point());
+        cit->info() = a;
+        add_simplex(std::array<unsigned, 4>{ cit->vertex(0)->info(), cit->vertex(1)->info(),
+                                             cit->vertex(2)->info(), cit->vertex(3)->info() }, a);
+    }
+
+    // dim 2 (facets): Gabriel ? own circumradius : min over the <=2 incident cells
+    std::unordered_map<Key3, double, Key3Hash> facet_alpha;
+    facet_alpha.reserve(dt.number_of_finite_facets());
+    for (auto fit = dt.finite_facets_begin(); fit != dt.finite_facets_end(); ++fit) {
+        typename DT::Facet f = *fit;
+        typename DT::Cell_handle c = f.first;
+        int i = f.second;
+        auto vs = facet_idx(c, i);
+        double a;
+        if (dt.is_Gabriel(f)) {
+            a = sq(c->vertex((i + 1) & 3)->point(), c->vertex((i + 2) & 3)->point(),
+                   c->vertex((i + 3) & 3)->point());
+        } else {
+            typename DT::Cell_handle c1 = c->neighbor(i);
+            double best = std::numeric_limits<double>::infinity();
+            if (!dt.is_infinite(c))  best = std::min(best, c->info());
+            if (!dt.is_infinite(c1)) best = std::min(best, c1->info());
+            a = best;
+        }
+        facet_alpha.emplace(key3(vs[0], vs[1], vs[2]), a);
+        add_simplex(vs, a);
+    }
+
+    // dim 1 (edges): Gabriel ? own circumradius : min over incident facets
+    for (auto eit = dt.finite_edges_begin(); eit != dt.finite_edges_end(); ++eit) {
+        typename DT::Edge e = *eit;
+        auto vh0 = e.first->vertex(e.second);
+        auto vh1 = e.first->vertex(e.third);
+        std::array<unsigned, 2> vs{ vh0->info(), vh1->info() };
+        double a;
+        if (dt.is_Gabriel(e)) {
+            a = sq(vh0->point(), vh1->point());
+        } else {
+            double best = std::numeric_limits<double>::infinity();
+            typename DT::Facet_circulator fc = dt.incident_facets(e), fdone = fc;
+            do {
+                if (!dt.is_infinite(*fc)) {
+                    auto fv = facet_idx(fc->first, fc->second);
+                    auto it = facet_alpha.find(key3(fv[0], fv[1], fv[2]));
+                    if (it != facet_alpha.end()) best = std::min(best, it->second);
+                }
+            } while (++fc != fdone);
+            a = best;
+        }
+        add_simplex(vs, a);
+    }
+
+    // dim 0 (vertices): alpha is 0 for unweighted alpha shapes
+    for (auto vit = dt.finite_vertices_begin(); vit != dt.finite_vertices_end(); ++vit)
+        add_simplex(std::array<unsigned, 1>{ vit->info() }, 0.0);
+}
+
+template<bool exact>
+template<class Points, class SimplexCallback>
+void
+diode::AlphaShapes<exact>::
 fill_alpha_shapes_with_attachment(const Points& points, const SimplexCallback& add_simplex)
 {
     using K          = detail::Kernel<exact>;

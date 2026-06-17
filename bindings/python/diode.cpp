@@ -105,23 +105,27 @@ fill_alpha_shape(py::array a, bool exact, bool with_attachment)
         }
         else
         {
+            // Faster Delaunay-direct path (plain Delaunay_triangulation_3 + direct
+            // squared-circumradius), equivalent to the Alpha_shape_3 path but
+            // emits simplices unsorted, so sort to keep the filtration order.
             AddSimplex::Simplices filtration;
             if (a.dtype().is(py::dtype::of<float>()))
             {
                 if (exact)
-                    diode::AlphaShapes<true>::fill_alpha_shapes(ArrayWrapper<float>(a), AddSimplex(&filtration));
+                    diode::AlphaShapes<true>::fill_alpha_shapes_direct(ArrayWrapper<float>(a), AddSimplex(&filtration));
                 else
-                    diode::AlphaShapes<false>::fill_alpha_shapes(ArrayWrapper<float>(a), AddSimplex(&filtration));
+                    diode::AlphaShapes<false>::fill_alpha_shapes_direct(ArrayWrapper<float>(a), AddSimplex(&filtration));
             }
             else if (a.dtype().is(py::dtype::of<double>()))
             {
                 if (exact)
-                    diode::AlphaShapes<true>::fill_alpha_shapes(ArrayWrapper<double>(a), AddSimplex(&filtration));
+                    diode::AlphaShapes<true>::fill_alpha_shapes_direct(ArrayWrapper<double>(a), AddSimplex(&filtration));
                 else
-                    diode::AlphaShapes<false>::fill_alpha_shapes(ArrayWrapper<double>(a), AddSimplex(&filtration));
+                    diode::AlphaShapes<false>::fill_alpha_shapes_direct(ArrayWrapper<double>(a), AddSimplex(&filtration));
             }
             else
                 throw std::runtime_error("Unknown array dtype");
+            sort_filtration(filtration);
             return py::cast(filtration);
         }
     } else if (a.shape()[1] == 2)
