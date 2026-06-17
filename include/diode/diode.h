@@ -16,6 +16,8 @@
 #include <CGAL/Alpha_shape_3.h>
 
 #include <CGAL/Delaunay_triangulation_2.h>
+#include <CGAL/Triangulation_vertex_base_with_info_2.h>
+#include <CGAL/Triangulation_face_base_with_info_2.h>
 
 #include <CGAL/Periodic_2_Delaunay_triangulation_2.h>
 #include <CGAL/Periodic_2_Delaunay_triangulation_traits_2.h>
@@ -84,6 +86,13 @@ struct AlphaShapes
 // the inexact-construction kernel (EPICK; exact predicates, fast double values).
 template<bool exact, class Points, class SimplexCallback>
 void fill_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex);
+
+// Faster equivalent of fill_alpha_shapes2d: Delaunay_triangulation_2 with the
+// input index in vertex info (O(1) lookup) and the face circumradius cached in
+// face info, instead of a std::set<Simplex2D> with per-edge recomputation.
+// Produces the same (simplex, alpha) set. Simplices are emitted unsorted.
+template<bool exact, class Points, class SimplexCallback>
+void fill_alpha_shapes2d_direct(const Points& points, const SimplexCallback& add_simplex);
 
 template<bool exact, class Points, class SimplexCallback>
 void fill_alpha_shapes2d_with_attachment(const Points& points, const SimplexCallback& add_simplex);

@@ -683,6 +683,84 @@ fill_weighted_periodic_alpha_shapes(const Points& points, const SimplexCallback&
 template<bool exact, class Points, class SimplexCallback>
 void
 diode::
+fill_alpha_shapes2d_direct(const Points& points, const SimplexCallback& add_simplex)
+{
+    using K     = detail::Kernel<exact>;
+    using Vb    = CGAL::Triangulation_vertex_base_with_info_2<unsigned, K>;
+    using Fb    = CGAL::Triangulation_face_base_with_info_2<double, K>;
+    using TDS   = CGAL::Triangulation_data_structure_2<Vb, Fb>;
+    using DT    = CGAL::Delaunay_triangulation_2<K, TDS>;
+    using Point = typename DT::Point;
+    using Face_handle   = typename DT::Face_handle;
+    using Vertex_handle = typename DT::Vertex_handle;
+
+    DT Dt;
+    {
+        std::vector<std::pair<Point, unsigned>> pts;
+        pts.reserve(points.size());
+        for (unsigned i = 0; i < points.size(); ++i)
+            pts.emplace_back(Point(points(i, 0), points(i, 1)), i);
+        Dt.insert(pts.begin(), pts.end());   // spatial-sort accelerated; sets info()
+    }
+
+    auto sq = [](auto&&... ps) { return detail::to_floating_point(CGAL::squared_radius(ps...)); };
+
+    // dim 2 (triangles): alpha = squared circumradius; cached on face info for edges
+    for (auto fit = Dt.finite_faces_begin(); fit != Dt.finite_faces_end(); ++fit) {
+        double a = sq(fit->vertex(0)->point(), fit->vertex(1)->point(), fit->vertex(2)->point());
+        fit->info() = a;
+        add_simplex(std::array<unsigned, 3>{ fit->vertex(0)->info(),
+                                             fit->vertex(1)->info(),
+                                             fit->vertex(2)->info() }, a);
+    }
+
+    // dim 1 (edges): non-attached (Gabriel) -> own circumradius; attached -> min
+    // over the two incident faces (same side_of_bounded_circle test as the
+    // std::set-based version, but reading the cached face circumradii).
+    for (auto eit = Dt.finite_edges_begin(); eit != Dt.finite_edges_end(); ++eit) {
+        Face_handle f = eit->first;
+        int i = eit->second;
+        Vertex_handle vv[2];
+        int k = 0;
+        for (int j = 0; j < 3; ++j)
+            if (j != i) vv[k++] = f->vertex(j);
+        const Point& p1 = vv[0]->point();
+        const Point& p2 = vv[1]->point();
+
+        Face_handle o = f->neighbor(i);
+        bool attached = false;
+        Vertex_handle opp_f = f->vertex(i);
+        if (!Dt.is_infinite(opp_f) &&
+            CGAL::side_of_bounded_circle(p1, p2, opp_f->point()) == CGAL::ON_BOUNDED_SIDE) {
+            attached = true;
+        } else {
+            Vertex_handle opp_o = o->vertex(o->index(f));
+            if (!Dt.is_infinite(opp_o) &&
+                CGAL::side_of_bounded_circle(p1, p2, opp_o->point()) == CGAL::ON_BOUNDED_SIDE)
+                attached = true;
+        }
+
+        double a;
+        if (!attached) {
+            a = sq(p1, p2);
+        } else if (Dt.is_infinite(f)) {
+            a = o->info();
+        } else if (Dt.is_infinite(o)) {
+            a = f->info();
+        } else {
+            a = std::min(f->info(), o->info());
+        }
+        add_simplex(std::array<unsigned, 2>{ vv[0]->info(), vv[1]->info() }, a);
+    }
+
+    // dim 0 (vertices): alpha is 0
+    for (auto vit = Dt.finite_vertices_begin(); vit != Dt.finite_vertices_end(); ++vit)
+        add_simplex(std::array<unsigned, 1>{ vit->info() }, 0.0);
+}
+
+template<bool exact, class Points, class SimplexCallback>
+void
+diode::
 fill_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex)
 {
     using K             = detail::Kernel<exact>;

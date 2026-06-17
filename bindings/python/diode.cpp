@@ -153,13 +153,13 @@ fill_alpha_shape(py::array a, bool exact, bool with_attachment)
             AddSimplex::Simplices filtration;
             if (a.dtype().is(py::dtype::of<float>()))
             {
-                if (exact) diode::fill_alpha_shapes2d<true >(ArrayWrapper<float>(a), AddSimplex(&filtration));
-                else       diode::fill_alpha_shapes2d<false>(ArrayWrapper<float>(a), AddSimplex(&filtration));
+                if (exact) diode::fill_alpha_shapes2d_direct<true >(ArrayWrapper<float>(a), AddSimplex(&filtration));
+                else       diode::fill_alpha_shapes2d_direct<false>(ArrayWrapper<float>(a), AddSimplex(&filtration));
             }
             else if (a.dtype().is(py::dtype::of<double>()))
             {
-                if (exact) diode::fill_alpha_shapes2d<true >(ArrayWrapper<double>(a), AddSimplex(&filtration));
-                else       diode::fill_alpha_shapes2d<false>(ArrayWrapper<double>(a), AddSimplex(&filtration));
+                if (exact) diode::fill_alpha_shapes2d_direct<true >(ArrayWrapper<double>(a), AddSimplex(&filtration));
+                else       diode::fill_alpha_shapes2d_direct<false>(ArrayWrapper<double>(a), AddSimplex(&filtration));
             }
             else
                 throw std::runtime_error("Unknown array dtype");
