@@ -680,12 +680,12 @@ fill_weighted_periodic_alpha_shapes(const Points& points, const SimplexCallback&
 #endif
 
 
-template<class Points, class SimplexCallback>
+template<bool exact, class Points, class SimplexCallback>
 void
 diode::
 fill_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex)
 {
-    using K             = CGAL::Exact_predicates_exact_constructions_kernel;
+    using K             = detail::Kernel<exact>;
     using Delaunay2D    = CGAL::Delaunay_triangulation_2<K>;
     using Vertex_handle = Delaunay2D::Vertex_handle;
     using Point         = Delaunay2D::Point;
@@ -849,12 +849,12 @@ fill_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex)
 // Callback signature: add_simplex(sigma_verts, alpha, tau_verts).
 // For Gabriel sigma, tau == sigma. For non-Gabriel sigma, tau is a Gabriel
 // coface whose own squared circumradius equals alpha.
-template<class Points, class SimplexCallback>
+template<bool exact, class Points, class SimplexCallback>
 void
 diode::
 fill_alpha_shapes2d_with_attachment(const Points& points, const SimplexCallback& add_simplex)
 {
-    using K             = CGAL::Exact_predicates_exact_constructions_kernel;
+    using K             = detail::Kernel<exact>;
     using Delaunay2D    = CGAL::Delaunay_triangulation_2<K>;
     using Vertex_handle = Delaunay2D::Vertex_handle;
     using Point         = Delaunay2D::Point;
@@ -1039,12 +1039,12 @@ fill_alpha_shapes2d_with_attachment(const Points& points, const SimplexCallback&
 }
 
 
-template<class Points, class SimplexCallback>
+template<bool exact, class Points, class SimplexCallback>
 void
 diode::
 fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex,std::array<double, 2> from, std::array<double, 2> to)
 {
-    using K             = CGAL::Exact_predicates_exact_constructions_kernel;
+    using K             = detail::Kernel<exact>;
     using GT            = CGAL::Periodic_2_Delaunay_triangulation_traits_2<K>;
     using PDelaunay2D   = CGAL::Periodic_2_Delaunay_triangulation_2<GT>;
     using Vertex_handle = PDelaunay2D::Vertex_handle;

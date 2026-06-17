@@ -79,13 +79,16 @@ struct AlphaShapes
     static std::array<typename Points::Real, 3> circumcenter(const Points& points);
 };
 
-template<class Points, class SimplexCallback>
+// 2D alpha shapes select the kernel from `exact`, like the 3D AlphaShapes<exact>
+// methods: exact=true uses CGAL's exact-construction kernel (EPECK), exact=false
+// the inexact-construction kernel (EPICK; exact predicates, fast double values).
+template<bool exact, class Points, class SimplexCallback>
 void fill_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex);
 
-template<class Points, class SimplexCallback>
+template<bool exact, class Points, class SimplexCallback>
 void fill_alpha_shapes2d_with_attachment(const Points& points, const SimplexCallback& add_simplex);
 
-template<class Points, class SimplexCallback>
+template<bool exact, class Points, class SimplexCallback>
 void fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex,
                                 std::array<double, 2> from, std::array<double, 2> to);
 

@@ -134,9 +134,15 @@ fill_alpha_shape(py::array a, bool exact, bool with_attachment)
         {
             AddSimplexWithAttachment::Simplices filtration;
             if (a.dtype().is(py::dtype::of<float>()))
-                diode::fill_alpha_shapes2d_with_attachment(ArrayWrapper<float>(a), AddSimplexWithAttachment(&filtration));
+            {
+                if (exact) diode::fill_alpha_shapes2d_with_attachment<true >(ArrayWrapper<float>(a), AddSimplexWithAttachment(&filtration));
+                else       diode::fill_alpha_shapes2d_with_attachment<false>(ArrayWrapper<float>(a), AddSimplexWithAttachment(&filtration));
+            }
             else if (a.dtype().is(py::dtype::of<double>()))
-                diode::fill_alpha_shapes2d_with_attachment(ArrayWrapper<double>(a), AddSimplexWithAttachment(&filtration));
+            {
+                if (exact) diode::fill_alpha_shapes2d_with_attachment<true >(ArrayWrapper<double>(a), AddSimplexWithAttachment(&filtration));
+                else       diode::fill_alpha_shapes2d_with_attachment<false>(ArrayWrapper<double>(a), AddSimplexWithAttachment(&filtration));
+            }
             else
                 throw std::runtime_error("Unknown array dtype");
             sort_filtration(filtration);
@@ -146,9 +152,15 @@ fill_alpha_shape(py::array a, bool exact, bool with_attachment)
         {
             AddSimplex::Simplices filtration;
             if (a.dtype().is(py::dtype::of<float>()))
-                diode::fill_alpha_shapes2d(ArrayWrapper<float>(a), AddSimplex(&filtration));
+            {
+                if (exact) diode::fill_alpha_shapes2d<true >(ArrayWrapper<float>(a), AddSimplex(&filtration));
+                else       diode::fill_alpha_shapes2d<false>(ArrayWrapper<float>(a), AddSimplex(&filtration));
+            }
             else if (a.dtype().is(py::dtype::of<double>()))
-                diode::fill_alpha_shapes2d(ArrayWrapper<double>(a), AddSimplex(&filtration));
+            {
+                if (exact) diode::fill_alpha_shapes2d<true >(ArrayWrapper<double>(a), AddSimplex(&filtration));
+                else       diode::fill_alpha_shapes2d<false>(ArrayWrapper<double>(a), AddSimplex(&filtration));
+            }
             else
                 throw std::runtime_error("Unknown array dtype");
             sort_filtration(filtration);
@@ -245,9 +257,15 @@ fill_periodic_alpha_shape(py::array a, bool exact, std::vector<double> from_, st
 
         AddSimplex::Simplices filtration;
         if (a.dtype().is(py::dtype::of<float>()))
-            diode::fill_periodic_alpha_shapes2d(ArrayWrapper<float>(a), AddSimplex(&filtration),from,to);
+        {
+            if (exact) diode::fill_periodic_alpha_shapes2d<true >(ArrayWrapper<float>(a), AddSimplex(&filtration),from,to);
+            else       diode::fill_periodic_alpha_shapes2d<false>(ArrayWrapper<float>(a), AddSimplex(&filtration),from,to);
+        }
         else if (a.dtype().is(py::dtype::of<double>()))
-            diode::fill_periodic_alpha_shapes2d(ArrayWrapper<double>(a), AddSimplex(&filtration),from,to);
+        {
+            if (exact) diode::fill_periodic_alpha_shapes2d<true >(ArrayWrapper<double>(a), AddSimplex(&filtration),from,to);
+            else       diode::fill_periodic_alpha_shapes2d<false>(ArrayWrapper<double>(a), AddSimplex(&filtration),from,to);
+        }
         else
             throw std::runtime_error("Unknown array dtype");
 
