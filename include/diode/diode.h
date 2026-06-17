@@ -63,6 +63,14 @@ struct AlphaShapes
     template<class Points, class SimplexCallback>
     static void fill_alpha_shapes_with_attachment(const Points& points, const SimplexCallback& add_simplex);
 
+    // Faster equivalent of fill_alpha_shapes_with_attachment (3D unweighted), built
+    // on the Delaunay-direct path. Emits the same attacher tau: a Gabriel coface
+    // whose own squared circumradius equals alpha. Computed as a byproduct of the
+    // Edelsbrunner propagation (Gabriel sigma -> tau = sigma; non-Gabriel -> the
+    // determining coface). Simplices emitted unsorted.
+    template<class Points, class SimplexCallback>
+    static void fill_alpha_shapes_direct_with_attachment(const Points& points, const SimplexCallback& add_simplex);
+
     template<class Points, class SimplexCallback>
     static void fill_weighted_alpha_shapes(const Points& points, const SimplexCallback& add_simplex);
 
@@ -96,6 +104,11 @@ void fill_alpha_shapes2d_direct(const Points& points, const SimplexCallback& add
 
 template<bool exact, class Points, class SimplexCallback>
 void fill_alpha_shapes2d_with_attachment(const Points& points, const SimplexCallback& add_simplex);
+
+// Faster equivalent of fill_alpha_shapes2d_with_attachment, built on the 2D
+// Delaunay-direct path. Same attacher contract. Simplices emitted unsorted.
+template<bool exact, class Points, class SimplexCallback>
+void fill_alpha_shapes2d_direct_with_attachment(const Points& points, const SimplexCallback& add_simplex);
 
 template<bool exact, class Points, class SimplexCallback>
 void fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex,

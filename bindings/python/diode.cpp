@@ -74,102 +74,78 @@ void sort_filtration(Simplices& filtration)
     });
 }
 
+// Slow == true selects the reference implementations kept for testing
+// (CGAL::Alpha_shape_3 in 3D, the std::set-based path in 2D). Slow == false
+// selects the fast Delaunay-direct paths. if constexpr keeps both compiled.
+template<bool Slow, bool Exact, class T>
+void run_alpha(const py::array& a, AddSimplex::Simplices& f, bool is2d)
+{
+    if (is2d) {
+        if constexpr (Slow) diode::fill_alpha_shapes2d<Exact>(ArrayWrapper<T>(a), AddSimplex(&f));
+        else                diode::fill_alpha_shapes2d_direct<Exact>(ArrayWrapper<T>(a), AddSimplex(&f));
+    } else {
+        if constexpr (Slow) diode::AlphaShapes<Exact>::fill_alpha_shapes(ArrayWrapper<T>(a), AddSimplex(&f));
+        else                diode::AlphaShapes<Exact>::fill_alpha_shapes_direct(ArrayWrapper<T>(a), AddSimplex(&f));
+    }
+}
+
+template<bool Slow, bool Exact, class T>
+void run_alpha_attach(const py::array& a, AddSimplexWithAttachment::Simplices& f, bool is2d)
+{
+    if (is2d) {
+        if constexpr (Slow) diode::fill_alpha_shapes2d_with_attachment<Exact>(ArrayWrapper<T>(a), AddSimplexWithAttachment(&f));
+        else                diode::fill_alpha_shapes2d_direct_with_attachment<Exact>(ArrayWrapper<T>(a), AddSimplexWithAttachment(&f));
+    } else {
+        if constexpr (Slow) diode::AlphaShapes<Exact>::fill_alpha_shapes_with_attachment(ArrayWrapper<T>(a), AddSimplexWithAttachment(&f));
+        else                diode::AlphaShapes<Exact>::fill_alpha_shapes_direct_with_attachment(ArrayWrapper<T>(a), AddSimplexWithAttachment(&f));
+    }
+}
+
+template<bool Slow>
 py::object
-fill_alpha_shape(py::array a, bool exact, bool with_attachment)
+fill_alpha_shape_impl(py::array a, bool exact, bool with_attachment)
 {
     if (a.ndim() != 2)
         throw std::runtime_error("Unknown input dimension: can only process 2D arrays");
+    auto cols = a.shape()[1];
+    if (cols != 2 && cols != 3)
+        throw std::runtime_error("Can only handle 2D or 3D alpha shapes");
+    bool is2d = (cols == 2);
 
-    if (a.shape()[1] == 3)
+    bool is_float  = a.dtype().is(py::dtype::of<float>());
+    bool is_double = a.dtype().is(py::dtype::of<double>());
+    if (!is_float && !is_double)
+        throw std::runtime_error("Unknown array dtype");
+
+    if (with_attachment)
     {
-        if (with_attachment)
-        {
-            AddSimplexWithAttachment::Simplices filtration;
-            if (a.dtype().is(py::dtype::of<float>()))
-            {
-                if (exact)
-                    diode::AlphaShapes<true>::fill_alpha_shapes_with_attachment(ArrayWrapper<float>(a), AddSimplexWithAttachment(&filtration));
-                else
-                    diode::AlphaShapes<false>::fill_alpha_shapes_with_attachment(ArrayWrapper<float>(a), AddSimplexWithAttachment(&filtration));
-            }
-            else if (a.dtype().is(py::dtype::of<double>()))
-            {
-                if (exact)
-                    diode::AlphaShapes<true>::fill_alpha_shapes_with_attachment(ArrayWrapper<double>(a), AddSimplexWithAttachment(&filtration));
-                else
-                    diode::AlphaShapes<false>::fill_alpha_shapes_with_attachment(ArrayWrapper<double>(a), AddSimplexWithAttachment(&filtration));
-            }
-            else
-                throw std::runtime_error("Unknown array dtype");
-            return py::cast(filtration);
-        }
-        else
-        {
-            // Faster Delaunay-direct path (plain Delaunay_triangulation_3 + direct
-            // squared-circumradius), equivalent to the Alpha_shape_3 path but
-            // emits simplices unsorted, so sort to keep the filtration order.
-            AddSimplex::Simplices filtration;
-            if (a.dtype().is(py::dtype::of<float>()))
-            {
-                if (exact)
-                    diode::AlphaShapes<true>::fill_alpha_shapes_direct(ArrayWrapper<float>(a), AddSimplex(&filtration));
-                else
-                    diode::AlphaShapes<false>::fill_alpha_shapes_direct(ArrayWrapper<float>(a), AddSimplex(&filtration));
-            }
-            else if (a.dtype().is(py::dtype::of<double>()))
-            {
-                if (exact)
-                    diode::AlphaShapes<true>::fill_alpha_shapes_direct(ArrayWrapper<double>(a), AddSimplex(&filtration));
-                else
-                    diode::AlphaShapes<false>::fill_alpha_shapes_direct(ArrayWrapper<double>(a), AddSimplex(&filtration));
-            }
-            else
-                throw std::runtime_error("Unknown array dtype");
-            sort_filtration(filtration);
-            return py::cast(filtration);
-        }
-    } else if (a.shape()[1] == 2)
-    {
-        if (with_attachment)
-        {
-            AddSimplexWithAttachment::Simplices filtration;
-            if (a.dtype().is(py::dtype::of<float>()))
-            {
-                if (exact) diode::fill_alpha_shapes2d_with_attachment<true >(ArrayWrapper<float>(a), AddSimplexWithAttachment(&filtration));
-                else       diode::fill_alpha_shapes2d_with_attachment<false>(ArrayWrapper<float>(a), AddSimplexWithAttachment(&filtration));
-            }
-            else if (a.dtype().is(py::dtype::of<double>()))
-            {
-                if (exact) diode::fill_alpha_shapes2d_with_attachment<true >(ArrayWrapper<double>(a), AddSimplexWithAttachment(&filtration));
-                else       diode::fill_alpha_shapes2d_with_attachment<false>(ArrayWrapper<double>(a), AddSimplexWithAttachment(&filtration));
-            }
-            else
-                throw std::runtime_error("Unknown array dtype");
-            sort_filtration(filtration);
-            return py::cast(filtration);
-        }
-        else
-        {
-            AddSimplex::Simplices filtration;
-            if (a.dtype().is(py::dtype::of<float>()))
-            {
-                if (exact) diode::fill_alpha_shapes2d_direct<true >(ArrayWrapper<float>(a), AddSimplex(&filtration));
-                else       diode::fill_alpha_shapes2d_direct<false>(ArrayWrapper<float>(a), AddSimplex(&filtration));
-            }
-            else if (a.dtype().is(py::dtype::of<double>()))
-            {
-                if (exact) diode::fill_alpha_shapes2d_direct<true >(ArrayWrapper<double>(a), AddSimplex(&filtration));
-                else       diode::fill_alpha_shapes2d_direct<false>(ArrayWrapper<double>(a), AddSimplex(&filtration));
-            }
-            else
-                throw std::runtime_error("Unknown array dtype");
-            sort_filtration(filtration);
-            return py::cast(filtration);
-        }
+        AddSimplexWithAttachment::Simplices f;
+        if (is_float) { if (exact) run_alpha_attach<Slow, true,  float >(a, f, is2d);
+                        else       run_alpha_attach<Slow, false, float >(a, f, is2d); }
+        else          { if (exact) run_alpha_attach<Slow, true,  double>(a, f, is2d);
+                        else       run_alpha_attach<Slow, false, double>(a, f, is2d); }
+        sort_filtration(f);
+        return py::cast(f);
     }
     else
-        throw std::runtime_error("Can only handle 2D or 3D alpha shapes");
+    {
+        AddSimplex::Simplices f;
+        if (is_float) { if (exact) run_alpha<Slow, true,  float >(a, f, is2d);
+                        else       run_alpha<Slow, false, float >(a, f, is2d); }
+        else          { if (exact) run_alpha<Slow, true,  double>(a, f, is2d);
+                        else       run_alpha<Slow, false, double>(a, f, is2d); }
+        sort_filtration(f);
+        return py::cast(f);
+    }
 }
+
+py::object
+fill_alpha_shape(py::array a, bool exact, bool with_attachment)
+{ return fill_alpha_shape_impl<false>(a, exact, with_attachment); }
+
+py::object
+fill_alpha_shape_slow(py::array a, bool exact, bool with_attachment)
+{ return fill_alpha_shape_impl<true>(a, exact, with_attachment); }
 
 py::object
 fill_weighted_alpha_shape(py::array a, bool exact, bool with_attachment)
@@ -370,6 +346,11 @@ PYBIND11_MODULE(diode, m)
           "sigma, tau == sigma. The triple form is intended for differentiable\n"
           "alpha-filtration pipelines where alpha values must be expressed as\n"
           "smooth functions of point coordinates.");
+    m.def("fill_alpha_shapes_slow",  &fill_alpha_shape_slow,
+          "data"_a, "exact"_a = false, "with_attachment"_a = false,
+          "Reference implementation of fill_alpha_shapes kept for testing: 3D uses\n"
+          "CGAL::Alpha_shape_3, 2D the std::set-based path. Same result as\n"
+          "fill_alpha_shapes but much slower; used to cross-check the fast path.");
     m.def("fill_weighted_alpha_shapes",  &fill_weighted_alpha_shape,
           "data"_a, "exact"_a = false, "with_attachment"_a = false,
           "returns (sorted) alpha shape filtration of the weighted input points (with_attachment=True is not yet supported)");
