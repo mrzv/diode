@@ -1,5 +1,6 @@
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 #include <algorithm>
 #include <array>
 #include <CGAL/Alpha_shape_vertex_base_3.h>
@@ -1714,4 +1715,165 @@ fill_delaunay2d(const Points& points, const SimplexCallback& add_simplex)
     // dim 0 (vertices)
     for (auto vit = Dt.finite_vertices_begin(); vit != Dt.finite_vertices_end(); ++vit)
         add_simplex(std::array<unsigned, 1>{ vit->info() });
+}
+
+template<bool exact, class Points, class SimplexCallback>
+void
+diode::
+fill_periodic_delaunay2d(const Points& points, const SimplexCallback& add_simplex,
+                         std::array<double, 2> from, std::array<double, 2> to)
+{
+    using K             = detail::Kernel<exact>;
+    using GT            = CGAL::Periodic_2_Delaunay_triangulation_traits_2<K>;
+    using PDelaunay2D   = CGAL::Periodic_2_Delaunay_triangulation_2<GT>;
+    using Vertex_handle = typename PDelaunay2D::Vertex_handle;
+    using Point         = typename PDelaunay2D::Point;
+    using Face_handle   = typename PDelaunay2D::Face_handle;
+    using Iso_rectangle = typename PDelaunay2D::Iso_rectangle;
+
+    using ASPointMap = std::unordered_map<Vertex_handle, unsigned>;
+
+    Iso_rectangle domain(from[0], from[1], to[0], to[1]);
+    PDelaunay2D pdt(domain);
+    ASPointMap point_map;
+    for (unsigned i = 0; i < points.size(); ++i)
+        point_map[pdt.insert(Point(points(i, 0), points(i, 1)))] = i;
+
+    if (pdt.is_triangulation_in_1_sheet())
+        pdt.convert_to_1_sheeted_covering();
+    else
+        throw std::runtime_error("Cannot convert to 1-sheeted covering");
+
+    // Periodic CGAL can report a canonical simplex (by input-index set) more than
+    // once under different offsets; dedup by vertex-index set, matching the
+    // periodic alpha paths (each index simplex emitted exactly once).
+    struct Key3 { unsigned a, b, c; bool operator==(const Key3& o) const { return a == o.a && b == o.b && c == o.c; } };
+    struct Key3Hash { std::size_t operator()(const Key3& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; h = h * 1000003u ^ k.c; return h; } };
+    auto key3 = [](unsigned a, unsigned b, unsigned c) { if (a > b) std::swap(a, b); if (b > c) std::swap(b, c); if (a > b) std::swap(a, b); return Key3{a, b, c}; };
+    struct Key2 { unsigned a, b; bool operator==(const Key2& o) const { return a == o.a && b == o.b; } };
+    struct Key2Hash { std::size_t operator()(const Key2& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; return h; } };
+    auto key2 = [](unsigned a, unsigned b) { if (a > b) std::swap(a, b); return Key2{a, b}; };
+
+    // faces (triangles)
+    std::unordered_set<Key3, Key3Hash> faces;
+    for (auto cur = pdt.finite_faces_begin(); cur != pdt.finite_faces_end(); ++cur) {
+        Key3 k = key3(point_map[cur->vertex(0)], point_map[cur->vertex(1)], point_map[cur->vertex(2)]);
+        if (faces.insert(k).second)
+            add_simplex(std::array<unsigned, 3>{ k.a, k.b, k.c });
+    }
+
+    // edges: the 2 vertices of edge (face, ei) are the vertices != ei
+    std::unordered_set<Key2, Key2Hash> edges;
+    for (auto cur = pdt.finite_edges_begin(); cur != pdt.finite_edges_end(); ++cur) {
+        auto e = *cur;
+        Face_handle f = e.first;
+        int ei = e.second;
+        unsigned idx[2];
+        int j = 0;
+        for (int i = 0; i < 3; ++i)
+            if (i != ei) idx[j++] = point_map[f->vertex(i)];
+        Key2 k = key2(idx[0], idx[1]);
+        if (edges.insert(k).second)
+            add_simplex(std::array<unsigned, 2>{ k.a, k.b });
+    }
+
+    // vertices (dedup by index; each input point is one canonical vertex)
+    std::vector<char> seen_v(points.size(), 0);
+    for (auto cur = pdt.finite_vertices_begin(); cur != pdt.finite_vertices_end(); ++cur) {
+        for (int i = 0; i < 3; ++i) {
+            auto vh = cur->face()->vertex(i);
+            if (vh != Vertex_handle() && vh->point() == cur->point()) {
+                unsigned idx = point_map[vh];
+                if (idx < seen_v.size() && !seen_v[idx]) { seen_v[idx] = 1; add_simplex(std::array<unsigned, 1>{ idx }); }
+                break;
+            }
+        }
+    }
+}
+
+template<bool exact>
+template<class Points, class SimplexCallback>
+void
+diode::AlphaShapes<exact>::
+fill_periodic_delaunay(const Points& points, const SimplexCallback& add_simplex,
+                       std::array<double, 3> from, std::array<double, 3> to)
+{
+    using K      = detail::Kernel<exact>;
+    using PK     = CGAL::Periodic_3_Delaunay_triangulation_traits_3<K>;
+    using DsVb   = CGAL::Periodic_3_triangulation_ds_vertex_base_3<>;
+    using Vb     = CGAL::Triangulation_vertex_base_3<PK, DsVb>;
+    using VbInfo = CGAL::Triangulation_vertex_base_with_info_3<unsigned, PK, Vb>;
+    using DsCb   = CGAL::Periodic_3_triangulation_ds_cell_base_3<>;
+    using Cb     = CGAL::Triangulation_cell_base_3<PK, DsCb>;
+    using TDS    = CGAL::Triangulation_data_structure_3<VbInfo, Cb>;
+    using PDT    = CGAL::Periodic_3_Delaunay_triangulation_3<PK, TDS>;
+    using Point         = typename PDT::Point;
+    using Vertex_handle = typename PDT::Vertex_handle;
+    using Cell_handle   = typename PDT::Cell_handle;
+
+    // Insert one at a time so we can stash the input index in the vertex info.
+    // (Periodic CGAL has no info-carrying range insert.)
+    PDT pdt(typename PK::Iso_cuboid_3(from[0], from[1], from[2], to[0], to[1], to[2]));
+    for (unsigned i = 0; i < points.size(); ++i) {
+        Vertex_handle vh = pdt.insert(Point(points(i, 0), points(i, 1), points(i, 2)));
+        if (vh != Vertex_handle())
+            vh->info() = i;
+    }
+
+    if (pdt.is_triangulation_in_1_sheet())
+        pdt.convert_to_1_sheeted_covering();
+    else
+        throw std::runtime_error("Cannot convert to 1-sheeted covering");
+
+    // Periodic CGAL reports a canonical simplex (by input-index set) once per
+    // offset; dedup by vertex-index set, matching the periodic alpha paths.
+    struct Key4 { unsigned a, b, c, d; bool operator==(const Key4& o) const { return a == o.a && b == o.b && c == o.c && d == o.d; } };
+    struct Key4Hash { std::size_t operator()(const Key4& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; h = h * 1000003u ^ k.c; h = h * 1000003u ^ k.d; return h; } };
+    auto key4 = [](unsigned a, unsigned b, unsigned c, unsigned d) {
+        unsigned v[4] = { a, b, c, d };
+        std::sort(v, v + 4);
+        return Key4{ v[0], v[1], v[2], v[3] };
+    };
+    struct Key3 { unsigned a, b, c; bool operator==(const Key3& o) const { return a == o.a && b == o.b && c == o.c; } };
+    struct Key3Hash { std::size_t operator()(const Key3& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; h = h * 1000003u ^ k.c; return h; } };
+    auto key3 = [](unsigned a, unsigned b, unsigned c) { if (a > b) std::swap(a, b); if (b > c) std::swap(b, c); if (a > b) std::swap(a, b); return Key3{a, b, c}; };
+    struct Key2 { unsigned a, b; bool operator==(const Key2& o) const { return a == o.a && b == o.b; } };
+    struct Key2Hash { std::size_t operator()(const Key2& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; return h; } };
+    auto key2 = [](unsigned a, unsigned b) { if (a > b) std::swap(a, b); return Key2{a, b}; };
+
+    // dim 3 (tetrahedra): periodic triangulations have no infinite cells
+    std::unordered_set<Key4, Key4Hash> cells;
+    for (auto cit = pdt.cells_begin(); cit != pdt.cells_end(); ++cit) {
+        Key4 k = key4(cit->vertex(0)->info(), cit->vertex(1)->info(),
+                      cit->vertex(2)->info(), cit->vertex(3)->info());
+        if (cells.insert(k).second)
+            add_simplex(std::array<unsigned, 4>{ k.a, k.b, k.c, k.d });
+    }
+
+    // dim 2 (facets): the 3 vertices of facet (cell, i) are the vertices != i
+    std::unordered_set<Key3, Key3Hash> facets;
+    for (auto fit = pdt.facets_begin(); fit != pdt.facets_end(); ++fit) {
+        Cell_handle c = fit->first;
+        int i = fit->second;
+        Key3 k = key3(c->vertex((i + 1) & 3)->info(), c->vertex((i + 2) & 3)->info(),
+                      c->vertex((i + 3) & 3)->info());
+        if (facets.insert(k).second)
+            add_simplex(std::array<unsigned, 3>{ k.a, k.b, k.c });
+    }
+
+    // dim 1 (edges)
+    std::unordered_set<Key2, Key2Hash> edges;
+    for (auto eit = pdt.edges_begin(); eit != pdt.edges_end(); ++eit) {
+        Cell_handle c = eit->first;
+        Key2 k = key2(c->vertex(eit->second)->info(), c->vertex(eit->third)->info());
+        if (edges.insert(k).second)
+            add_simplex(std::array<unsigned, 2>{ k.a, k.b });
+    }
+
+    // dim 0 (vertices): one canonical vertex per input point
+    std::vector<char> seen_v(points.size(), 0);
+    for (auto vit = pdt.vertices_begin(); vit != pdt.vertices_end(); ++vit) {
+        unsigned idx = vit->info();
+        if (idx < seen_v.size() && !seen_v[idx]) { seen_v[idx] = 1; add_simplex(std::array<unsigned, 1>{ idx }); }
+    }
 }

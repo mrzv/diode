@@ -302,6 +302,76 @@ fill_delaunay(py::array a, bool exact)
     return py::cast(f);
 }
 
+// run the periodic combinatorics-only Delaunay traversal (2D or 3D), feeding each
+// simplex to cb(std::array<unsigned,D>) with no alpha value.
+template<class Cb>
+void run_periodic_delaunay_traversal(py::array a, bool exact,
+                                     std::vector<double> from_, std::vector<double> to_, const Cb& cb)
+{
+    if (a.ndim() != 2)
+        throw std::runtime_error("Unknown input dimension: can only process 2D arrays");
+    auto cols = a.shape()[1];
+    if (cols != 2 && cols != 3)
+        throw std::runtime_error("Can only handle 2D or 3D Delaunay triangulations");
+    bool is_float  = a.dtype().is(py::dtype::of<float>());
+    bool is_double = a.dtype().is(py::dtype::of<double>());
+    if (!is_float && !is_double)
+        throw std::runtime_error("Unknown array dtype");
+
+    if (cols == 3)
+    {
+        std::array<double,3> from { from_[0], from_[1], from_[2] }, to { to_[0], to_[1], to_[2] };
+        auto run = [&](auto etag) {
+            constexpr bool E = decltype(etag)::value;
+            if (is_float) diode::AlphaShapes<E>::fill_periodic_delaunay(ArrayWrapper<float >(a), cb, from, to);
+            else          diode::AlphaShapes<E>::fill_periodic_delaunay(ArrayWrapper<double>(a), cb, from, to);
+        };
+        if (exact) run(std::true_type{}); else run(std::false_type{});
+    }
+    else
+    {
+        std::array<double,2> from { from_[0], from_[1] }, to { to_[0], to_[1] };
+        auto run = [&](auto etag) {
+            constexpr bool E = decltype(etag)::value;
+            if (is_float) diode::fill_periodic_delaunay2d<E>(ArrayWrapper<float >(a), cb, from, to);
+            else          diode::fill_periodic_delaunay2d<E>(ArrayWrapper<double>(a), cb, from, to);
+        };
+        if (exact) run(std::true_type{}); else run(std::false_type{});
+    }
+}
+
+// returns verts_by_dim (per-dim (n_d, d+1) int64 arrays) for the periodic Delaunay
+// triangulation, no values.
+py::object
+fill_periodic_delaunay_arrays(py::array a, bool exact, std::vector<double> from_, std::vector<double> to_)
+{
+    AddSimplexArraysNoVal::Verts verts;
+    run_periodic_delaunay_traversal(a, exact, from_, to_, AddSimplexArraysNoVal { &verts });
+
+    int max_dim = -1;
+    for (int d = 0; d < 4; ++d)
+        if (!verts[d].empty())
+            max_dim = d;
+
+    py::list verts_by_dim;
+    for (int d = 0; d <= max_dim; ++d)
+    {
+        py::ssize_t w = d + 1;
+        py::ssize_t n = static_cast<py::ssize_t>(verts[d].size()) / w;
+        verts_by_dim.append(vector_to_numpy(std::move(verts[d]), { n, w }));
+    }
+    return verts_by_dim;
+}
+
+// returns a flat list of vertex lists for the periodic Delaunay triangulation.
+py::object
+fill_periodic_delaunay(py::array a, bool exact, std::vector<double> from_, std::vector<double> to_)
+{
+    AddSimplexNoVal::Simplices f;
+    run_periodic_delaunay_traversal(a, exact, from_, to_, AddSimplexNoVal { &f });
+    return py::cast(f);
+}
+
 #ifdef DIODE_HAVE_OINEUS
 // MUST match Oineus's bindings: OINEUS_PYTHON_INT (long), OINEUS_PYTHON_REAL
 // (double). Oineus copies the cells out of the capsule, so allocator backends
@@ -643,6 +713,19 @@ PYBIND11_MODULE(diode, m)
           "data"_a, "exact"_a = false,
           "Delaunay simplices (the alpha-complex simplex set) as a flat list of\n"
           "vertex lists, WITHOUT alpha values. List form of fill_delaunay_arrays.");
+    m.def("fill_periodic_delaunay_arrays", &fill_periodic_delaunay_arrays,
+          "data"_a, "exact"_a = false,
+          "from"_a = std::vector<double> {0.,0.,0.},
+          "to"_a   = std::vector<double> {1.,1.,1.},
+          "Periodic Delaunay simplices as per-dimension NumPy arrays WITHOUT alpha\n"
+          "values (periodic counterpart of fill_delaunay_arrays). Each canonical\n"
+          "simplex is emitted once. verts_by_dim[d] is an (n_d, d+1) int64 array.");
+    m.def("fill_periodic_delaunay", &fill_periodic_delaunay,
+          "data"_a, "exact"_a = false,
+          "from"_a = std::vector<double> {0.,0.,0.},
+          "to"_a   = std::vector<double> {1.,1.,1.},
+          "Periodic Delaunay simplices as a flat list of vertex lists, WITHOUT alpha\n"
+          "values. List form of fill_periodic_delaunay_arrays.");
 #ifdef DIODE_HAVE_OINEUS
     m.def("fill_alpha_shapes_cells", &fill_alpha_shapes_cells,
           "data"_a, "exact"_a = false,

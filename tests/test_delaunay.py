@@ -92,3 +92,52 @@ def test_delaunay_arrays_empty_dims_and_dtype():
 def test_delaunay_functions_exist():
     assert hasattr(diode, "fill_delaunay")
     assert hasattr(diode, "fill_delaunay_arrays")
+
+
+# ---- periodic: combinatorics vs the periodic alpha path ---------------------
+# The periodic triangulation must be representable in 1 sheet; the alpha path
+# raises "Cannot convert to 1-sheeted covering" otherwise (too few points for the
+# domain). 3D needs noticeably more points than 2D. Both paths share this guard,
+# so we compare only when the alpha path succeeds.
+PERIODIC_SIZES = {2: [20, 100, 500], 3: [200, 800]}
+
+
+@pytest.mark.parametrize("dim", DIMS)
+@pytest.mark.parametrize("exact", EXACTS)
+def test_periodic_delaunay_matches_alpha_simplex_set(dim, exact):
+    frm, to = [0.0] * dim, [1.0] * dim
+    for n in PERIODIC_SIZES[dim]:
+        rng = np.random.default_rng(6000 * n + 10 * dim + int(exact))
+        pts = rng.random((n, dim))
+        try:
+            s_alpha = {frozenset(int(v) for v in verts)
+                       for verts, _ in diode.fill_periodic_alpha_shapes(pts, exact, frm, to)}
+        except RuntimeError:
+            # not representable in 1 sheet -- the delaunay path must also raise
+            with pytest.raises(RuntimeError):
+                diode.fill_periodic_delaunay(pts, exact, frm, to)
+            continue
+
+        dl_list = diode.fill_periodic_delaunay(pts, exact, frm, to)
+        s_list = list_simplex_set(dl_list)
+        assert len(dl_list) == len(s_list), "periodic fill_delaunay emitted duplicates"
+        assert s_list == s_alpha, (
+            f"periodic delaunay/alpha sets differ at dim={dim} n={n} "
+            f"(delaunay {len(s_list)}, alpha {len(s_alpha)})")
+
+        dl_arr = diode.fill_periodic_delaunay_arrays(pts, exact, frm, to)
+        s_arr = arrays_simplex_set(dl_arr)
+        assert sum(np.asarray(a).shape[0] for a in dl_arr) == len(s_arr), \
+            "periodic fill_delaunay_arrays emitted duplicates"
+        assert s_arr == s_alpha
+
+        # every simplex is non-degenerate, and the alternating face count is the
+        # Euler characteristic of the d-torus, which is 0.
+        counts = [int(np.asarray(a).shape[0]) for a in dl_arr]
+        euler = sum((-1) ** d * c for d, c in enumerate(counts))
+        assert euler == 0, f"periodic Euler characteristic {euler} != 0 (d-torus) at dim={dim} n={n}"
+
+
+def test_periodic_delaunay_functions_exist():
+    assert hasattr(diode, "fill_periodic_delaunay")
+    assert hasattr(diode, "fill_periodic_delaunay_arrays")
