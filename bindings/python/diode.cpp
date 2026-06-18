@@ -211,16 +211,13 @@ struct AddSimplexArrays
     }
 };
 
-// returns (verts_by_dim, vals_by_dim): per-dimension NumPy arrays. verts_by_dim[d]
-// is (n_d, d+1) int64, vals_by_dim[d] is (n_d,) float64. Unsorted within a
-// dimension -- the consumer sorts by value.
+// pack the per-dimension (verts, vals) buffers an AddSimplexArrays sink filled into
+// (verts_by_dim, vals_by_dim): verts_by_dim[d] is (n_d, d+1) int64, vals_by_dim[d]
+// is (n_d,) float64. Moves the buffers out (zero-copy capsules), so the sink's
+// buffers are left empty afterwards.
 py::object
-fill_alpha_shapes_arrays(py::array a, bool exact)
+pack_simplex_arrays(AddSimplexArrays::Verts& verts, AddSimplexArrays::Vals& vals)
 {
-    AddSimplexArrays::Verts verts;
-    AddSimplexArrays::Vals  vals;
-    run_alpha_direct_traversal(a, exact, AddSimplexArrays { &verts, &vals });
-
     int max_dim = -1;
     for (int d = 0; d < 4; ++d)
         if (!vals[d].empty())
@@ -236,6 +233,135 @@ fill_alpha_shapes_arrays(py::array a, bool exact)
     }
     return py::make_tuple(verts_by_dim, vals_by_dim);
 }
+
+// returns (verts_by_dim, vals_by_dim): per-dimension NumPy arrays. verts_by_dim[d]
+// is (n_d, d+1) int64, vals_by_dim[d] is (n_d,) float64. Unsorted within a
+// dimension -- the consumer sorts by value.
+py::object
+fill_alpha_shapes_arrays(py::array a, bool exact)
+{
+    AddSimplexArrays::Verts verts;
+    AddSimplexArrays::Vals  vals;
+    run_alpha_direct_traversal(a, exact, AddSimplexArrays { &verts, &vals });
+    return pack_simplex_arrays(verts, vals);
+}
+
+// ===========================================================================
+// The remaining filtration-array exporters (weighted, periodic, weighted
+// periodic). Each feeds a value-carrying direct traversal an AddSimplexArrays
+// sink and packs exactly like fill_alpha_shapes_arrays -- same unsorted, per-
+// dimension contract. The degenerate-input fallback, duplicate-coordinate
+// relabel, the periodic "Cannot convert to 1-sheeted covering" exception and the
+// weight constraint all live in the direct C++ paths, so they flow through here.
+// ===========================================================================
+
+// weighted (4-column x,y,z,weight) value-carrying traversal: mirrors
+// run_weighted_delaunay_traversal but calls fill_weighted_alpha_shapes_direct.
+template<class Cb>
+void run_weighted_alpha_direct_traversal(py::array a, bool exact, const Cb& cb)
+{
+    if (a.ndim() != 2 || a.shape()[1] != 4)
+        throw std::runtime_error("weighted input must be a 4-column array (x, y, z, weight)");
+    if (a.dtype().is(py::dtype::of<float>())) {
+        if (exact) diode::AlphaShapes<true >::fill_weighted_alpha_shapes_direct(ArrayWrapper<float >(a), cb);
+        else       diode::AlphaShapes<false>::fill_weighted_alpha_shapes_direct(ArrayWrapper<float >(a), cb);
+    } else if (a.dtype().is(py::dtype::of<double>())) {
+        if (exact) diode::AlphaShapes<true >::fill_weighted_alpha_shapes_direct(ArrayWrapper<double>(a), cb);
+        else       diode::AlphaShapes<false>::fill_weighted_alpha_shapes_direct(ArrayWrapper<double>(a), cb);
+    } else
+        throw std::runtime_error("Unknown array dtype");
+}
+
+py::object
+fill_weighted_alpha_shapes_arrays(py::array a, bool exact)
+{
+    AddSimplexArrays::Verts verts;
+    AddSimplexArrays::Vals  vals;
+    run_weighted_alpha_direct_traversal(a, exact, AddSimplexArrays { &verts, &vals });
+    return pack_simplex_arrays(verts, vals);
+}
+
+// unweighted periodic (2D or 3D) value-carrying traversal: mirrors
+// run_periodic_delaunay_traversal but calls the periodic alpha direct functions.
+template<class Cb>
+void run_periodic_alpha_direct_traversal(py::array a, bool exact,
+                                         std::vector<double> from_, std::vector<double> to_, const Cb& cb)
+{
+    if (a.ndim() != 2)
+        throw std::runtime_error("Unknown input dimension: can only process 2D arrays");
+    auto cols = a.shape()[1];
+    if (cols != 2 && cols != 3)
+        throw std::runtime_error("Can only handle 2D or 3D alpha shapes");
+    check_periodic_domain(from_, to_, static_cast<std::size_t>(cols));
+    bool is_float  = a.dtype().is(py::dtype::of<float>());
+    bool is_double = a.dtype().is(py::dtype::of<double>());
+    if (!is_float && !is_double)
+        throw std::runtime_error("Unknown array dtype");
+
+    if (cols == 3)
+    {
+        std::array<double,3> from { from_[0], from_[1], from_[2] }, to { to_[0], to_[1], to_[2] };
+        auto run = [&](auto etag) {
+            constexpr bool E = decltype(etag)::value;
+            if (is_float) diode::AlphaShapes<E>::fill_periodic_alpha_shapes_direct(ArrayWrapper<float >(a), cb, from, to);
+            else          diode::AlphaShapes<E>::fill_periodic_alpha_shapes_direct(ArrayWrapper<double>(a), cb, from, to);
+        };
+        if (exact) run(std::true_type{}); else run(std::false_type{});
+    }
+    else
+    {
+        std::array<double,2> from { from_[0], from_[1] }, to { to_[0], to_[1] };
+        auto run = [&](auto etag) {
+            constexpr bool E = decltype(etag)::value;
+            if (is_float) diode::fill_periodic_alpha_shapes2d_direct<E>(ArrayWrapper<float >(a), cb, from, to);
+            else          diode::fill_periodic_alpha_shapes2d_direct<E>(ArrayWrapper<double>(a), cb, from, to);
+        };
+        if (exact) run(std::true_type{}); else run(std::false_type{});
+    }
+}
+
+py::object
+fill_periodic_alpha_shapes_arrays(py::array a, bool exact, std::vector<double> from_, std::vector<double> to_)
+{
+    AddSimplexArrays::Verts verts;
+    AddSimplexArrays::Vals  vals;
+    run_periodic_alpha_direct_traversal(a, exact, from_, to_, AddSimplexArrays { &verts, &vals });
+    return pack_simplex_arrays(verts, vals);
+}
+
+#if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
+// weighted periodic (4-column) value-carrying traversal: mirrors
+// run_weighted_periodic_delaunay_traversal but calls the weighted periodic alpha
+// direct function.
+template<class Cb>
+void run_weighted_periodic_alpha_direct_traversal(py::array a, bool exact,
+                                                  std::vector<double> from_, std::vector<double> to_, const Cb& cb)
+{
+    if (a.ndim() != 2 || a.shape()[1] != 4)
+        throw std::runtime_error("weighted input must be a 4-column array (x, y, z, weight)");
+    check_periodic_domain(from_, to_, 3);
+    std::array<double,3> from { from_[0], from_[1], from_[2] }, to { to_[0], to_[1], to_[2] };
+    auto run = [&](auto etag) {
+        constexpr bool E = decltype(etag)::value;
+        if (a.dtype().is(py::dtype::of<float>()))
+            diode::AlphaShapes<E>::fill_weighted_periodic_alpha_shapes_direct(ArrayWrapper<float >(a), cb, from, to);
+        else if (a.dtype().is(py::dtype::of<double>()))
+            diode::AlphaShapes<E>::fill_weighted_periodic_alpha_shapes_direct(ArrayWrapper<double>(a), cb, from, to);
+        else
+            throw std::runtime_error("Unknown array dtype");
+    };
+    if (exact) run(std::true_type{}); else run(std::false_type{});
+}
+
+py::object
+fill_weighted_periodic_alpha_shapes_arrays(py::array a, bool exact, std::vector<double> from_, std::vector<double> to_)
+{
+    AddSimplexArrays::Verts verts;
+    AddSimplexArrays::Vals  vals;
+    run_weighted_periodic_alpha_direct_traversal(a, exact, from_, to_, AddSimplexArrays { &verts, &vals });
+    return pack_simplex_arrays(verts, vals);
+}
+#endif
 
 // ===========================================================================
 // Combinatorics-only Delaunay exporters (no alpha values). Same shape as the
@@ -825,6 +951,14 @@ PYBIND11_MODULE(diode, m)
           "Reference implementation of fill_weighted_alpha_shapes kept for testing: "
           "uses CGAL::Alpha_shape_3 on the regular triangulation. Same result as "
           "fill_weighted_alpha_shapes but slower.");
+    m.def("fill_weighted_alpha_shapes_arrays", &fill_weighted_alpha_shapes_arrays,
+          "data"_a, "exact"_a = false,
+          "Weighted alpha shape filtration as per-dimension NumPy arrays, for a\n"
+          "4-column input (x, y, z, weight): returns (verts_by_dim, vals_by_dim) where\n"
+          "verts_by_dim[d] is an (n_d, d+1) int64 array of vertex ids and vals_by_dim[d]\n"
+          "an (n_d,) float64 array of alpha values. Arrays form of\n"
+          "fill_weighted_alpha_shapes; avoids one Python object per simplex. Unsorted\n"
+          "within each dimension -- the consumer sorts by value.");
     m.def("fill_periodic_alpha_shapes",  &fill_periodic_alpha_shape,
           "data"_a, "exact"_a = false,
           "from"_a = std::vector<double> {0.,0.,0.},
@@ -838,6 +972,16 @@ PYBIND11_MODULE(diode, m)
           "with_attachment"_a = false,
           "Reference periodic alpha filtration kept for testing: 2D uses the\n"
           "std::set-based path (3D uses CGAL::Alpha_shape_3, same as the fast one).");
+    m.def("fill_periodic_alpha_shapes_arrays", &fill_periodic_alpha_shapes_arrays,
+          "data"_a, "exact"_a = false,
+          "from"_a = std::vector<double> {0.,0.,0.},
+          "to"_a   = std::vector<double> {1.,1.,1.},
+          "Periodic alpha shape filtration (2D or 3D) as per-dimension NumPy arrays:\n"
+          "returns (verts_by_dim, vals_by_dim) where verts_by_dim[d] is an (n_d, d+1)\n"
+          "int64 array of vertex ids and vals_by_dim[d] an (n_d,) float64 array of alpha\n"
+          "values. Arrays form of fill_periodic_alpha_shapes; each canonical simplex is\n"
+          "emitted once. Unsorted within each dimension. Raises if the cloud is not\n"
+          "representable in one sheet of the periodic covering.");
 #if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
     m.def("fill_weighted_periodic_alpha_shapes",  &fill_weighted_periodic_alpha_shape,
           "data"_a, "exact"_a = false,
@@ -855,6 +999,17 @@ PYBIND11_MODULE(diode, m)
           "with_attachment"_a = false,
           "Reference implementation of fill_weighted_periodic_alpha_shapes kept for "
           "testing: uses CGAL::Alpha_shape_3 on the periodic regular triangulation.");
+    m.def("fill_weighted_periodic_alpha_shapes_arrays", &fill_weighted_periodic_alpha_shapes_arrays,
+          "data"_a, "exact"_a = false,
+          "from"_a = std::vector<double> {0.,0.,0.},
+          "to"_a   = std::vector<double> {1.,1.,1.},
+          "Weighted periodic alpha shape filtration as per-dimension NumPy arrays, for a\n"
+          "4-column input (x, y, z, weight): returns (verts_by_dim, vals_by_dim) where\n"
+          "verts_by_dim[d] is an (n_d, d+1) int64 array of vertex ids and vals_by_dim[d]\n"
+          "an (n_d,) float64 array of alpha values. Arrays form of\n"
+          "fill_weighted_periodic_alpha_shapes; each canonical simplex is emitted once.\n"
+          "Unsorted within each dimension. Raises if the cloud is not representable in\n"
+          "one sheet of the periodic covering.");
 #endif
     m.def("circumcenter", &circumcenter, "points"_a, "exact"_a = false, "returns circumcenter of the intput points");
 }
