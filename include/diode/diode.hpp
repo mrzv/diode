@@ -1612,3 +1612,106 @@ fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_si
         }
     }
 }
+
+// ===========================================================================
+// Combinatorics-only exporters: emit the Delaunay simplices (the alpha-complex
+// simplex set) with NO alpha values. The callback takes only the vertex array:
+//     add_simplex(std::array<unsigned, D>)
+// for D in {1,2,3,4}. These skip every Gabriel test / circumradius evaluation;
+// they exist for consumers that recompute filtration values themselves (e.g.
+// Oineus's differentiable Cech-Delaunay, which derives values as min-enclosing-
+// ball radii from each simplex's own vertices).
+// ===========================================================================
+
+template<bool exact>
+template<class Points, class SimplexCallback>
+void
+diode::AlphaShapes<exact>::
+fill_delaunay(const Points& points, const SimplexCallback& add_simplex)
+{
+    using K     = detail::Kernel<exact>;
+    using Vb    = CGAL::Triangulation_vertex_base_with_info_3<unsigned, K>;
+    using Cb    = CGAL::Triangulation_cell_base_with_info_3<double, K>;
+    using TDS   = CGAL::Triangulation_data_structure_3<Vb, Cb>;
+    using DT    = CGAL::Delaunay_triangulation_3<K, TDS, CGAL::Fast_location>;
+    using Point = typename K::Point_3;
+
+    // Same bulk insert as fill_alpha_shapes_direct: the input index rides in the
+    // vertex info, so vertex->info() is the original point id (no Point->index map).
+    DT dt;
+    {
+        std::vector<std::pair<Point, unsigned>> pts;
+        pts.reserve(points.size());
+        for (unsigned i = 0; i < points.size(); ++i)
+            pts.emplace_back(Point(points(i, 0), points(i, 1), points(i, 2)), i);
+        dt.insert(pts.begin(), pts.end());   // spatial-sort accelerated
+    }
+
+    // dim 3 (tetrahedra)
+    for (auto cit = dt.finite_cells_begin(); cit != dt.finite_cells_end(); ++cit)
+        add_simplex(std::array<unsigned, 4>{ cit->vertex(0)->info(), cit->vertex(1)->info(),
+                                             cit->vertex(2)->info(), cit->vertex(3)->info() });
+
+    // dim 2 (facets): the 3 vertices of facet (cell, i) are the vertices != i
+    for (auto fit = dt.finite_facets_begin(); fit != dt.finite_facets_end(); ++fit) {
+        typename DT::Cell_handle c = fit->first;
+        int i = fit->second;
+        add_simplex(std::array<unsigned, 3>{ c->vertex((i + 1) & 3)->info(),
+                                             c->vertex((i + 2) & 3)->info(),
+                                             c->vertex((i + 3) & 3)->info() });
+    }
+
+    // dim 1 (edges)
+    for (auto eit = dt.finite_edges_begin(); eit != dt.finite_edges_end(); ++eit)
+        add_simplex(std::array<unsigned, 2>{ eit->first->vertex(eit->second)->info(),
+                                             eit->first->vertex(eit->third)->info() });
+
+    // dim 0 (vertices)
+    for (auto vit = dt.finite_vertices_begin(); vit != dt.finite_vertices_end(); ++vit)
+        add_simplex(std::array<unsigned, 1>{ vit->info() });
+}
+
+template<bool exact, class Points, class SimplexCallback>
+void
+diode::
+fill_delaunay2d(const Points& points, const SimplexCallback& add_simplex)
+{
+    using K     = detail::Kernel<exact>;
+    using Vb    = CGAL::Triangulation_vertex_base_with_info_2<unsigned, K>;
+    using Fb    = CGAL::Triangulation_face_base_with_info_2<double, K>;
+    using TDS   = CGAL::Triangulation_data_structure_2<Vb, Fb>;
+    using DT    = CGAL::Delaunay_triangulation_2<K, TDS>;
+    using Point         = typename DT::Point;
+    using Face_handle   = typename DT::Face_handle;
+    using Vertex_handle = typename DT::Vertex_handle;
+
+    DT Dt;
+    {
+        std::vector<std::pair<Point, unsigned>> pts;
+        pts.reserve(points.size());
+        for (unsigned i = 0; i < points.size(); ++i)
+            pts.emplace_back(Point(points(i, 0), points(i, 1)), i);
+        Dt.insert(pts.begin(), pts.end());   // spatial-sort accelerated; sets info()
+    }
+
+    // dim 2 (triangles)
+    for (auto fit = Dt.finite_faces_begin(); fit != Dt.finite_faces_end(); ++fit)
+        add_simplex(std::array<unsigned, 3>{ fit->vertex(0)->info(),
+                                             fit->vertex(1)->info(),
+                                             fit->vertex(2)->info() });
+
+    // dim 1 (edges): the 2 vertices of edge (face, i) are the vertices != i
+    for (auto eit = Dt.finite_edges_begin(); eit != Dt.finite_edges_end(); ++eit) {
+        Face_handle f = eit->first;
+        int i = eit->second;
+        Vertex_handle vv[2];
+        int k = 0;
+        for (int j = 0; j < 3; ++j)
+            if (j != i) vv[k++] = f->vertex(j);
+        add_simplex(std::array<unsigned, 2>{ vv[0]->info(), vv[1]->info() });
+    }
+
+    // dim 0 (vertices)
+    for (auto vit = Dt.finite_vertices_begin(); vit != Dt.finite_vertices_end(); ++vit)
+        add_simplex(std::array<unsigned, 1>{ vit->info() });
+}
