@@ -313,6 +313,8 @@ void run_periodic_delaunay_traversal(py::array a, bool exact,
     auto cols = a.shape()[1];
     if (cols != 2 && cols != 3)
         throw std::runtime_error("Can only handle 2D or 3D Delaunay triangulations");
+    if (from_.size() < static_cast<size_t>(cols) || to_.size() < static_cast<size_t>(cols))
+        throw std::runtime_error("from/to must have at least as many entries as the point dimension");
     bool is_float  = a.dtype().is(py::dtype::of<float>());
     bool is_double = a.dtype().is(py::dtype::of<double>());
     if (!is_float && !is_double)
@@ -420,6 +422,8 @@ void run_weighted_periodic_delaunay_traversal(py::array a, bool exact,
 {
     if (a.ndim() != 2 || a.shape()[1] != 4)
         throw std::runtime_error("weighted input must be a 4-column array (x, y, z, weight)");
+    if (from_.size() < 3 || to_.size() < 3)
+        throw std::runtime_error("from/to must have at least 3 entries for weighted 3D periodic input");
     std::array<double,3> from { from_[0], from_[1], from_[2] }, to { to_[0], to_[1], to_[2] };
     auto run = [&](auto etag) {
         constexpr bool E = decltype(etag)::value;
@@ -645,6 +649,8 @@ fill_periodic_alpha_shape_impl(py::array a, bool exact, std::vector<double> from
     auto cols = a.shape()[1];
     if (cols != 2 && cols != 3)
         throw std::runtime_error("Can only handle 2D or 3D alpha shapes");
+    if (from_.size() < static_cast<size_t>(cols) || to_.size() < static_cast<size_t>(cols))
+        throw std::runtime_error("from/to must have at least as many entries as the point dimension");
     bool is_float  = a.dtype().is(py::dtype::of<float>());
     bool is_double = a.dtype().is(py::dtype::of<double>());
     if (!is_float && !is_double)

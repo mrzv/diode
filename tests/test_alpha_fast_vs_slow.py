@@ -125,6 +125,77 @@ def test_slow_function_exists():
     assert hasattr(diode, "fill_weighted_alpha_shapes_slow")
 
 
+# ---- regression: degenerate (lower-dimensional) inputs must not crash and must
+# match the _slow reference (previously the fast paths segfaulted) --------------
+DEGENERATE_2D = [
+    np.array([[0., 0.]]),                                  # single point
+    np.array([[0., 0.], [1., 0.]]),                        # 2 points (1-D)
+    np.array([[0., 0.], [1., 0.], [2., 0.]]),              # collinear
+]
+DEGENERATE_3D = [
+    np.array([[0., 0., 0.]]),                              # single point
+    np.array([[0., 0., 0.], [1., 0., 0.]]),               # 2 points
+    np.array([[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]]),  # 3 points (2-D)
+    np.array([[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [1., 1., 0.]]),  # coplanar
+]
+
+
+@pytest.mark.parametrize("pts", DEGENERATE_2D + DEGENERATE_3D)
+@pytest.mark.parametrize("exact", EXACTS)
+def test_degenerate_input_matches_slow(pts, exact):
+    assert (to_value_dict(diode.fill_alpha_shapes(pts, exact=exact))
+            == to_value_dict(diode.fill_alpha_shapes_slow(pts, exact=exact)))
+
+
+@pytest.mark.parametrize("pts", DEGENERATE_2D + DEGENERATE_3D)
+def test_degenerate_input_with_attachment_matches_slow(pts):
+    assert (to_value_dict(diode.fill_alpha_shapes(pts, with_attachment=True))
+            == to_value_dict(diode.fill_alpha_shapes_slow(pts, with_attachment=True)))
+
+
+def test_degenerate_weighted_matches_slow():
+    w = np.array([[0., 0., 0., .01], [1., 0., 0., .01]])  # 2 weighted points (1-D)
+    assert (to_value_dict(diode.fill_weighted_alpha_shapes(w))
+            == to_value_dict(diode.fill_weighted_alpha_shapes_slow(w)))
+
+
+# ---- regression: duplicate coordinates must pick the same vertex representative
+# as the _slow reference (last input index wins) --------------------------------
+def _vertex_id_set(filtration):
+    return {tuple(sorted(int(v) for v in entry[0])) for entry in filtration}
+
+
+def _delaunay_vertex_id_set(simplices):
+    return {tuple(sorted(int(v) for v in verts)) for verts in simplices}
+
+
+def test_duplicate_coords_match_slow_vertex_ids():
+    # index 0 and index 4 are the same point; _slow keeps index 4.
+    p3 = np.array([[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 1.], [0., 0., 0.]])
+    assert _vertex_id_set(diode.fill_alpha_shapes(p3)) == _vertex_id_set(diode.fill_alpha_shapes_slow(p3))
+    assert _delaunay_vertex_id_set(diode.fill_delaunay(p3)) == _vertex_id_set(diode.fill_alpha_shapes_slow(p3))
+
+    p2 = np.array([[0., 0.], [1., 0.], [0., 1.], [0., 0.]])
+    assert _vertex_id_set(diode.fill_alpha_shapes(p2)) == _vertex_id_set(diode.fill_alpha_shapes_slow(p2))
+
+    w = np.array([[0., 0., 0., .01], [1., 0., 0., .01], [0., 1., 0., .01],
+                  [0., 0., 1., .01], [0., 0., 0., .01]])
+    assert _vertex_id_set(diode.fill_weighted_alpha_shapes(w)) == _vertex_id_set(diode.fill_weighted_alpha_shapes_slow(w))
+
+
+# ---- regression: malformed from/to length must raise, not crash ---------------
+def test_periodic_from_to_length_validated():
+    rng = np.random.default_rng(0)
+    with pytest.raises(RuntimeError):
+        diode.fill_periodic_delaunay(rng.random((20, 2)), False, [0.0], [1.0])
+    with pytest.raises(RuntimeError):
+        diode.fill_periodic_alpha_shapes(rng.random((20, 3)), False, [0., 0.], [1., 1.])
+    with pytest.raises(RuntimeError):
+        diode.fill_weighted_periodic_delaunay(rng.random((20, 4)), False, [0., 0.], [1., 1.])
+    # the length-3 default is accepted for 2D points (only the first 2 are used)
+    diode.fill_periodic_alpha_shapes(rng.random((50, 2)))
+
+
 # ---- weighted 3D: fast (Regular_triangulation_3 + Edelsbrunner) vs slow
 # (Alpha_shape_3 on the regular triangulation) ------------------------------
 # Input is a 4-column array (x, y, z, weight). The direct path uses CGAL's

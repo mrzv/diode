@@ -1,4 +1,5 @@
 #include <sstream>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 #include <algorithm>
@@ -23,6 +24,26 @@ template<bool exact>
 using Kernel = typename std::conditional<exact,
                                          CGAL::Exact_predicates_exact_constructions_kernel,
                                          CGAL::Exact_predicates_inexact_constructions_kernel>::type;
+
+// CGAL merges coincident input points into a single vertex, keeping the info of
+// whichever copy it inserted. The std::map-based reference (_slow) paths instead
+// keep the LAST input index for a repeated point. Re-label the bulk-inserted fast
+// triangulations to match, so they agree with _slow on duplicate coordinates.
+// Guarded by one size check: a no-op when every input point is its own vertex
+// (the common case; only triggers when CGAL dropped vertices -- duplicates, or, for
+// regular triangulations, hidden weighted points, which it relabels harmlessly).
+template<class Tri, class Points, class MakePoint>
+void relabel_duplicates_last_wins(Tri& dt, const Points& points, MakePoint make_point)
+{
+    if (dt.number_of_vertices() >= static_cast<std::size_t>(points.size()))
+        return;
+    using P = decltype(make_point(static_cast<unsigned>(0)));
+    std::map<P, unsigned> last_index;
+    for (unsigned i = 0; i < points.size(); ++i)
+        last_index[make_point(i)] = i;
+    for (auto v = dt.finite_vertices_begin(); v != dt.finite_vertices_end(); ++v)
+        v->info() = last_index.find(v->point())->second;
+}
 
 template<class Delaunay_, class Point_ = typename Delaunay_::Point, class Vertex_ = unsigned>
 struct AlphaShapeWrapper
@@ -382,6 +403,17 @@ fill_alpha_shapes_direct(const Points& points, const SimplexCallback& add_simple
         dt.insert(pts.begin(), pts.end());   // spatial-sort accelerated
     }
 
+    // Degenerate (collinear/coplanar/<=1 point) input: the full-dimensional facet/
+    // edge walk below dereferences invalid neighbor cells. Defer to the reference
+    // path, which defines the degenerate result (CGAL::Alpha_shape_3 yields nothing
+    // for a non-3D point set).
+    if (dt.dimension() < 3) {
+        fill_alpha_shapes(points, add_simplex);
+        return;
+    }
+    detail::relabel_duplicates_last_wins(dt, points,
+        [&](unsigned i) { return Point(points(i, 0), points(i, 1), points(i, 2)); });
+
     // Respect `exact`: for the exact (EPECK) kernel, to_floating_point forces
     // CGAL::exact() before converting; for the inexact (EPICK) kernel its FT is
     // double and this is an identity (no overhead). Same convention as the rest
@@ -500,6 +532,14 @@ fill_alpha_shapes_direct_with_attachment(const Points& points, const SimplexCall
             pts.emplace_back(Point(points(i, 0), points(i, 1), points(i, 2)), i);
         dt.insert(pts.begin(), pts.end());
     }
+
+    // Degenerate input (< 3D): defer to the reference (see fill_alpha_shapes_direct).
+    if (dt.dimension() < 3) {
+        fill_alpha_shapes_with_attachment(points, add_simplex);
+        return;
+    }
+    detail::relabel_duplicates_last_wins(dt, points,
+        [&](unsigned i) { return Point(points(i, 0), points(i, 1), points(i, 2)); });
 
     auto sq = [](auto&&... ps) { return detail::to_floating_point(CGAL::squared_radius(ps...)); };
 
@@ -704,6 +744,14 @@ fill_weighted_alpha_shapes_direct(const Points& points, const SimplexCallback& a
                                              points(i, 3)), i);
         rt.insert(wpts.begin(), wpts.end());
     }
+
+    // Degenerate input (< 3D): defer to the reference (see fill_alpha_shapes_direct).
+    if (rt.dimension() < 3) {
+        fill_weighted_alpha_shapes(points, add_simplex);
+        return;
+    }
+    detail::relabel_duplicates_last_wins(rt, points, [&](unsigned i) {
+        return Weighted_point(Bare_point(points(i, 0), points(i, 1), points(i, 2)), points(i, 3)); });
 
     // squared radius of the smallest orthogonal sphere through weighted vertices:
     // 4 args -> cell, 3 -> facet, 2 -> edge, 1 -> vertex (returns -weight). Respects
@@ -1270,6 +1318,16 @@ fill_alpha_shapes2d_direct(const Points& points, const SimplexCallback& add_simp
         Dt.insert(pts.begin(), pts.end());   // spatial-sort accelerated; sets info()
     }
 
+    // Degenerate input (< 2D, i.e. collinear/<=1 point): the edge walk below
+    // dereferences invalid neighbor faces. Defer to the reference path, which
+    // handles the 1-D alpha complex (vertices + edges).
+    if (Dt.dimension() < 2) {
+        fill_alpha_shapes2d<exact>(points, add_simplex);
+        return;
+    }
+    detail::relabel_duplicates_last_wins(Dt, points,
+        [&](unsigned i) { return Point(points(i, 0), points(i, 1)); });
+
     auto sq = [](auto&&... ps) { return detail::to_floating_point(CGAL::squared_radius(ps...)); };
 
     // dim 2 (triangles): alpha = squared circumradius; cached on face info for edges
@@ -1347,6 +1405,14 @@ fill_alpha_shapes2d_direct_with_attachment(const Points& points, const SimplexCa
             pts.emplace_back(Point(points(i, 0), points(i, 1)), i);
         Dt.insert(pts.begin(), pts.end());
     }
+
+    // Degenerate input (< 2D): defer to the reference (see fill_alpha_shapes2d_direct).
+    if (Dt.dimension() < 2) {
+        fill_alpha_shapes2d_with_attachment<exact>(points, add_simplex);
+        return;
+    }
+    detail::relabel_duplicates_last_wins(Dt, points,
+        [&](unsigned i) { return Point(points(i, 0), points(i, 1)); });
 
     auto sq = [](auto&&... ps) { return detail::to_floating_point(CGAL::squared_radius(ps...)); };
     auto face_idx = [](Face_handle f) {
@@ -2086,6 +2152,11 @@ fill_delaunay(const Points& points, const SimplexCallback& add_simplex)
             pts.emplace_back(Point(points(i, 0), points(i, 1), points(i, 2)), i);
         dt.insert(pts.begin(), pts.end());   // spatial-sort accelerated
     }
+    // A lower-dimensional Delaunay (collinear/coplanar input) is fine to walk here
+    // -- only the alpha Gabriel walk needs full dimension -- but keep duplicate
+    // vertex ids consistent with the alpha paths.
+    detail::relabel_duplicates_last_wins(dt, points,
+        [&](unsigned i) { return Point(points(i, 0), points(i, 1), points(i, 2)); });
 
     // dim 3 (tetrahedra)
     for (auto cit = dt.finite_cells_begin(); cit != dt.finite_cells_end(); ++cit)
@@ -2133,6 +2204,8 @@ fill_delaunay2d(const Points& points, const SimplexCallback& add_simplex)
             pts.emplace_back(Point(points(i, 0), points(i, 1)), i);
         Dt.insert(pts.begin(), pts.end());   // spatial-sort accelerated; sets info()
     }
+    detail::relabel_duplicates_last_wins(Dt, points,
+        [&](unsigned i) { return Point(points(i, 0), points(i, 1)); });
 
     // dim 2 (triangles)
     for (auto fit = Dt.finite_faces_begin(); fit != Dt.finite_faces_end(); ++fit)
@@ -2341,6 +2414,8 @@ fill_weighted_delaunay(const Points& points, const SimplexCallback& add_simplex)
                                              points(i, 3)), i);
         rt.insert(wpts.begin(), wpts.end());
     }
+    detail::relabel_duplicates_last_wins(rt, points, [&](unsigned i) {
+        return Weighted_point(Bare_point(points(i, 0), points(i, 1), points(i, 2)), points(i, 3)); });
 
     // dim 3 (tetrahedra)
     for (auto cit = rt.finite_cells_begin(); cit != rt.finite_cells_end(); ++cit)
