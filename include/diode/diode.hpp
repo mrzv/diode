@@ -41,8 +41,14 @@ void relabel_duplicates_last_wins(Tri& dt, const Points& points, MakePoint make_
     std::map<P, unsigned> last_index;
     for (unsigned i = 0; i < points.size(); ++i)
         last_index[make_point(i)] = i;
-    for (auto v = dt.finite_vertices_begin(); v != dt.finite_vertices_end(); ++v)
-        v->info() = last_index.find(v->point())->second;
+    for (auto v = dt.finite_vertices_begin(); v != dt.finite_vertices_end(); ++v) {
+        // Every surviving vertex of a (non-periodic) Delaunay/regular triangulation is
+        // one of the inserted points, so find() always hits here; guard it anyway and
+        // leave the bulk-inserted index in place if it somehow doesn't, never deref end().
+        auto it = last_index.find(v->point());
+        if (it != last_index.end())
+            v->info() = it->second;
+    }
 }
 
 template<class Delaunay_, class Point_ = typename Delaunay_::Point, class Vertex_ = unsigned>

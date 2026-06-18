@@ -5,6 +5,21 @@ namespace py = pybind11;
 
 #include <diode/diode.h>
 
+// Validate a periodic box before it reaches CGAL: it must have at least `dim`
+// entries and a strictly positive extent on every axis. Otherwise CGAL's
+// Iso_cuboid_3/Iso_rectangle is empty or inverted and the triangulation crashes
+// the interpreter deep inside (no Python exception). Works for std::vector and
+// std::array operands.
+template<class Vec>
+static void check_periodic_domain(const Vec& from_, const Vec& to_, std::size_t dim)
+{
+    if (from_.size() < dim || to_.size() < dim)
+        throw std::runtime_error("from/to must have at least as many entries as the point dimension");
+    for (std::size_t k = 0; k < dim; ++k)
+        if (!(from_[k] < to_[k]))
+            throw std::runtime_error("periodic domain is empty or inverted: require from[k] < to[k] on every axis");
+}
+
 // present a numpy array in a way that diode understands
 template<class T>
 struct ArrayWrapper
@@ -300,8 +315,7 @@ void run_periodic_delaunay_traversal(py::array a, bool exact,
     auto cols = a.shape()[1];
     if (cols != 2 && cols != 3)
         throw std::runtime_error("Can only handle 2D or 3D Delaunay triangulations");
-    if (from_.size() < static_cast<size_t>(cols) || to_.size() < static_cast<size_t>(cols))
-        throw std::runtime_error("from/to must have at least as many entries as the point dimension");
+    check_periodic_domain(from_, to_, static_cast<std::size_t>(cols));
     bool is_float  = a.dtype().is(py::dtype::of<float>());
     bool is_double = a.dtype().is(py::dtype::of<double>());
     if (!is_float && !is_double)
@@ -409,8 +423,7 @@ void run_weighted_periodic_delaunay_traversal(py::array a, bool exact,
 {
     if (a.ndim() != 2 || a.shape()[1] != 4)
         throw std::runtime_error("weighted input must be a 4-column array (x, y, z, weight)");
-    if (from_.size() < 3 || to_.size() < 3)
-        throw std::runtime_error("from/to must have at least 3 entries for weighted 3D periodic input");
+    check_periodic_domain(from_, to_, 3);
     std::array<double,3> from { from_[0], from_[1], from_[2] }, to { to_[0], to_[1], to_[2] };
     auto run = [&](auto etag) {
         constexpr bool E = decltype(etag)::value;
@@ -587,8 +600,7 @@ fill_periodic_alpha_shape_impl(py::array a, bool exact, std::vector<double> from
     auto cols = a.shape()[1];
     if (cols != 2 && cols != 3)
         throw std::runtime_error("Can only handle 2D or 3D alpha shapes");
-    if (from_.size() < static_cast<size_t>(cols) || to_.size() < static_cast<size_t>(cols))
-        throw std::runtime_error("from/to must have at least as many entries as the point dimension");
+    check_periodic_domain(from_, to_, static_cast<std::size_t>(cols));
     bool is_float  = a.dtype().is(py::dtype::of<float>());
     bool is_double = a.dtype().is(py::dtype::of<double>());
     if (!is_float && !is_double)
@@ -655,6 +667,7 @@ fill_weighted_periodic_alpha_shape_impl(py::array a, bool exact, std::array<doub
         throw std::runtime_error("Unknown input dimension: can only process 2D arrays");
     if (a.shape()[1] != 4)
         throw std::runtime_error("Can only handle 3D alpha shapes (input must be a 4-column array: coordinates + weight)");
+    check_periodic_domain(from, to, 3);
 
     bool is_float  = a.dtype().is(py::dtype::of<float>());
     bool is_double = a.dtype().is(py::dtype::of<double>());
@@ -752,16 +765,19 @@ PYBIND11_MODULE(diode, m)
           "per simplex. The consumer sorts within each dimension.");
     m.def("fill_delaunay_arrays", &fill_delaunay_arrays,
           "data"_a, "exact"_a = false,
-          "Delaunay simplices (the alpha-complex simplex set) as per-dimension NumPy\n"
-          "arrays WITHOUT alpha values: returns verts_by_dim where verts_by_dim[d] is\n"
-          "an (n_d, d+1) int64 array of vertex ids. Skips all Gabriel/circumradius\n"
-          "work, so it is faster than fill_alpha_shapes_arrays. Intended for consumers\n"
-          "that recompute filtration values themselves (e.g. a differentiable\n"
-          "Cech-Delaunay filtration). Unsorted within each dimension.");
+          "Delaunay simplices (== the alpha-complex simplex set for full-dimensional\n"
+          "input) as per-dimension NumPy arrays WITHOUT alpha values: returns\n"
+          "verts_by_dim where verts_by_dim[d] is an (n_d, d+1) int64 array of vertex\n"
+          "ids. Skips all Gabriel/circumradius work, so it is faster than\n"
+          "fill_alpha_shapes_arrays. Intended for consumers that recompute filtration\n"
+          "values themselves (e.g. a differentiable Cech-Delaunay filtration). For\n"
+          "degenerate (collinear/coplanar) input this returns the lower-dimensional\n"
+          "Delaunay complex (fill_alpha_shapes returns nothing there). Unsorted within\n"
+          "each dimension.");
     m.def("fill_delaunay", &fill_delaunay,
           "data"_a, "exact"_a = false,
-          "Delaunay simplices (the alpha-complex simplex set) as a flat list of\n"
-          "vertex lists, WITHOUT alpha values. List form of fill_delaunay_arrays.");
+          "Delaunay simplices as a flat list of vertex lists, WITHOUT alpha values.\n"
+          "List form of fill_delaunay_arrays (see it for the degenerate-input note).");
     m.def("fill_periodic_delaunay_arrays", &fill_periodic_delaunay_arrays,
           "data"_a, "exact"_a = false,
           "from"_a = std::vector<double> {0.,0.,0.},

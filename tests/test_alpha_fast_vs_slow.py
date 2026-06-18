@@ -54,9 +54,15 @@ def sq_circumradius_batch(P):
 
 
 def check_attacher(filtration, points, rtol):
-    """Assert squared_circumradius(tau) == alpha for every (sigma, alpha, tau)."""
+    """Assert tau is a coface of sigma and squared_circumradius(tau) == alpha
+    for every (sigma, alpha, tau)."""
     by_dim = {}
     for verts, alpha, tau in filtration:
+        # tau must be a coface of sigma (sigma's vertices are a subset of tau's);
+        # a structurally wrong tau with a coincidentally-right circumradius would
+        # otherwise slip past the radius check below.
+        assert set(int(v) for v in verts) <= set(int(t) for t in tau), (
+            f"attacher tau {list(tau)} is not a coface of sigma {list(verts)}")
         td = len(tau)
         by_dim.setdefault(td, ([], []))
         by_dim[td][0].append([int(x) for x in tau])
@@ -194,6 +200,60 @@ def test_periodic_from_to_length_validated():
         diode.fill_weighted_periodic_delaunay(rng.random((20, 4)), False, [0., 0.], [1., 1.])
     # the length-3 default is accepted for 2D points (only the first 2 are used)
     diode.fill_periodic_alpha_shapes(rng.random((50, 2)))
+
+
+def test_periodic_inverted_domain_raises():
+    # An empty/inverted periodic box (from >= to on some axis) must raise, not
+    # crash the interpreter deep inside CGAL.
+    rng = np.random.default_rng(0)
+    p3 = rng.random((50, 3))
+    p2 = rng.random((50, 2))
+    w = np.hstack([rng.random((50, 3)), rng.random((50, 1)) * 0.01])
+    with pytest.raises(RuntimeError):
+        diode.fill_periodic_alpha_shapes(p3, False, [1., 1., 1.], [0., 0., 0.])   # inverted 3D
+    with pytest.raises(RuntimeError):
+        diode.fill_periodic_alpha_shapes(p2, False, [1., 1.], [0., 0.])           # inverted 2D
+    with pytest.raises(RuntimeError):
+        diode.fill_periodic_delaunay(p3, False, [0., 0., 0.], [0., 1., 1.])       # zero extent on x
+    with pytest.raises(RuntimeError):
+        diode.fill_weighted_periodic_alpha_shapes(w, False, [1., 1., 1.], [0., 0., 0.])
+    with pytest.raises(RuntimeError):
+        diode.fill_weighted_periodic_delaunay(w, False, [1., 1., 1.], [0., 0., 0.])
+
+
+# ---- third-party (gudhi) oracle for cases where the _slow reference is itself
+# wrong: the fast paths are correct, so we pin them against gudhi, not _slow.
+# See SLOW_REFERENCE_BUGS.md.
+def test_2d_hull_vertices_match_gudhi():
+    gudhi = pytest.importorskip("gudhi")
+    # 7 distinct points on a hull config where the _slow 2D path drops a vertex
+    # (uninitialized s[0]); the fast path keeps all 7 and matches gudhi.
+    pts = np.array([[2., 1.], [0., 0.], [1., 0.], [2., 2.], [0., 2.], [1., 2.], [2., 0.]])
+    fast = {frozenset(int(v) for v in s) for s, _ in diode.fill_alpha_shapes(pts, exact=True)}
+    st = gudhi.AlphaComplex(points=pts.tolist()).create_simplex_tree()
+    g = {frozenset(s) for s, _ in st.get_simplices()}
+    assert fast == g, f"fast vs gudhi differ: {fast ^ g}"
+    assert sum(1 for s in fast if len(s) == 1) == 7   # _slow drops one vertex here
+
+
+def test_weighted_shared_coords_match_gudhi():
+    gudhi = pytest.importorskip("gudhi")
+    # two weighted sites at identical coordinates with different weights: the
+    # regular triangulation keeps the larger-weight one, so the surviving vertex's
+    # alpha is -max(weight) = -0.5. The fast path gets this right (matches gudhi);
+    # the _slow reference mislabels it as -0.01.
+    data = np.array([[0., 0., 0., 0.01],
+                     [1., 0., 0., 0.01],
+                     [0., 1., 0., 0.01],
+                     [0., 0., 1., 0.01],
+                     [0., 0., 0., 0.5]])
+    fast = diode.fill_weighted_alpha_shapes(data)
+    fv = sorted(float(a) for s, a in fast if len(s) == 1)
+    st = gudhi.AlphaComplex(points=data[:, :3].tolist(),
+                            weights=data[:, 3].tolist()).create_simplex_tree()
+    gv = sorted(float(v) for s, v in st.get_simplices() if len(s) == 1)
+    assert len(fv) == len(gv) and np.allclose(fv, gv, atol=1e-9), (fv, gv)
+    assert min(fv) == pytest.approx(-0.5, abs=1e-9)   # the kept site has weight 0.5
 
 
 # ---- weighted 3D: fast (Regular_triangulation_3 + Edelsbrunner) vs slow

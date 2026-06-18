@@ -94,6 +94,20 @@ def test_delaunay_functions_exist():
     assert hasattr(diode, "fill_delaunay_arrays")
 
 
+def test_delaunay_degenerate_3d_emits_lower_dim_complex():
+    # Coplanar 3D input: fill_alpha_shapes returns nothing (CGAL::Alpha_shape_3
+    # needs a full-dimensional triangulation), but fill_delaunay emits the real
+    # lower-dimensional Delaunay complex -- the two intentionally differ here, as
+    # documented. (Pins the behavior the docstrings were corrected to describe.)
+    pts = np.array([[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [1., 1., 0.]])  # 4 coplanar
+    assert diode.fill_alpha_shapes(pts) == []
+    dl = diode.fill_delaunay(pts)
+    s = {frozenset(int(v) for v in verts) for verts in dl}
+    assert len(dl) == len(s) and len(s) > 0          # non-empty, no duplicates
+    assert all(len(k) <= 3 for k in s)               # no tetrahedra: it is 2-dimensional
+    assert sum(1 for k in s if len(k) == 1) == 4     # all 4 vertices present
+
+
 # ---- periodic: combinatorics vs the periodic alpha path ---------------------
 # The periodic triangulation must be representable in 1 sheet; the alpha path
 # raises "Cannot convert to 1-sheeted covering" otherwise (too few points for the

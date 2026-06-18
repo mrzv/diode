@@ -145,9 +145,10 @@ Delaunay combinatorics (no alpha values)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Some consumers only need the simplicial complex (the Delaunay triangulation,
-which is the same simplex set as the alpha complex) and recompute their own
-filtration values -- for example a differentiable Cech-Delaunay filtration that
-recomputes values as minimum-enclosing-ball radii. For those,
+which for full-dimensional input is the same simplex set as the alpha complex)
+and recompute their own filtration values -- for example a differentiable
+Cech-Delaunay filtration that recomputes values as minimum-enclosing-ball radii.
+For those,
 ``diode.fill_delaunay_arrays(...)`` returns just the combinatorics, skipping all
 of CGAL's per-simplex Gabriel/circumradius work (about 1.6x faster than the alpha
 path in 2D and 4x in 3D)::

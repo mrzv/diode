@@ -107,11 +107,14 @@ struct AlphaShapes
     // Combinatorics-only export (3D, unweighted): builds the same plain
     // Delaunay_triangulation_3 as fill_alpha_shapes_direct (vertex index in vertex
     // info, O(1) lookup) and emits every finite simplex (cells, facets, edges,
-    // vertices) by vertex index, WITHOUT computing any alpha value. The simplex set
-    // is exactly that of fill_alpha_shapes (the alpha complex is the full Delaunay
-    // triangulation). Intended for consumers that recompute filtration values
-    // themselves (e.g. a differentiable Cech-Delaunay filtration): all the per-simplex
-    // Gabriel/circumradius work is skipped. The callback is invoked as
+    // vertices) by vertex index, WITHOUT computing any alpha value. For full-
+    // dimensional input the simplex set equals that of fill_alpha_shapes (the alpha
+    // complex is the full Delaunay triangulation). NB: for degenerate (collinear/
+    // coplanar) 3D input this emits the actual lower-dimensional Delaunay complex,
+    // whereas fill_alpha_shapes returns nothing (CGAL::Alpha_shape_3 requires a
+    // full-dimensional triangulation). Intended for consumers that recompute filtration
+    // values themselves (e.g. a differentiable Cech-Delaunay filtration): all the
+    // per-simplex Gabriel/circumradius work is skipped. The callback is invoked as
     //     add_simplex(sigma_vertices)
     // with no value argument. Simplices are emitted unsorted.
     template<class Points, class SimplexCallback>
@@ -152,9 +155,11 @@ struct AlphaShapes
     // vertex info, weighted squared radius in cell info, offset-corrected geometry via
     // pdt.point(cell,i)) instead of CGAL::Alpha_shape_3. Gabriel uses the periodic
     // regular triangulation's is_Gabriel(Facet/Edge/Vertex). Each canonical simplex is
-    // emitted once (deduped by vertex-index set, value min-reduced over offsets). Same
-    // simplex set as fill_weighted_periodic_alpha_shapes; values match up to the
-    // periodic Gabriel offset ambiguity. Simplices emitted unsorted.
+    // emitted once (deduped by vertex-index set, value min-reduced over offsets). For
+    // non-degenerate clouds the simplex set matches fill_weighted_periodic_alpha_shapes
+    // and values agree up to the periodic Gabriel offset ambiguity; near the sparse
+    // 1-sheet boundary the two can differ (this path always emits a valid, dedup'd
+    // complex, where the slow path may emit index-duplicated simplices). Emitted unsorted.
     template<class Points, class SimplexCallback>
     static void fill_weighted_periodic_alpha_shapes_direct(const Points& points, const SimplexCallback& add_simplex,
                                                     std::array<double, 3> from, std::array<double, 3> to);
