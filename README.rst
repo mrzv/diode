@@ -141,6 +141,27 @@ shape for a weighted point set on a periodic cube::
     [-0.00752673  0.14213101  1.0060982 ]
 
 
+Delaunay combinatorics (no alpha values)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Some consumers only need the simplicial complex (the Delaunay triangulation,
+which is the same simplex set as the alpha complex) and recompute their own
+filtration values -- for example a differentiable Cech-Delaunay filtration that
+recomputes values as minimum-enclosing-ball radii. For those,
+``diode.fill_delaunay_arrays(...)`` returns just the combinatorics, skipping all
+of CGAL's per-simplex Gabriel/circumradius work (about 1.6x faster than the alpha
+path in 2D and 4x in 3D)::
+
+    >>> verts_by_dim = diode.fill_delaunay_arrays(points)
+
+The result is a list of per-dimension NumPy arrays, where ``verts_by_dim[d]`` is
+an ``(n_d, d+1)`` int64 array of vertex ids (dimension 0 = vertices, 1 = edges,
+and so on). ``diode.fill_delaunay(...)`` is the equivalent list-of-tuples form.
+``diode.fill_periodic_delaunay_arrays(...)`` / ``diode.fill_periodic_delaunay(...)``
+are the periodic counterparts (over the cube ``[from, to]``, default the unit
+cube). All four take the same ``exact`` argument as the alpha-shape functions.
+
+
 Exactness
 ~~~~~~~~~
 
