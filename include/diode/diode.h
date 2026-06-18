@@ -130,6 +130,18 @@ struct AlphaShapes
     template<class Points, class SimplexCallback>
     static void fill_weighted_periodic_alpha_shapes(const Points& points, const SimplexCallback& add_simplex,
                                                     std::array<double, 3> from, std::array<double, 3> to);
+
+    // Faster equivalent of fill_weighted_periodic_alpha_shapes (3D weighted periodic):
+    // weighted Edelsbrunner on a plain Periodic_3_regular_triangulation_3 (index in
+    // vertex info, weighted squared radius in cell info, offset-corrected geometry via
+    // pdt.point(cell,i)) instead of CGAL::Alpha_shape_3. Gabriel uses the periodic
+    // regular triangulation's is_Gabriel(Facet/Edge/Vertex). Each canonical simplex is
+    // emitted once (deduped by vertex-index set, value min-reduced over offsets). Same
+    // simplex set as fill_weighted_periodic_alpha_shapes; values match up to the
+    // periodic Gabriel offset ambiguity. Simplices emitted unsorted.
+    template<class Points, class SimplexCallback>
+    static void fill_weighted_periodic_alpha_shapes_direct(const Points& points, const SimplexCallback& add_simplex,
+                                                    std::array<double, 3> from, std::array<double, 3> to);
 #endif
 
     template<class Points>

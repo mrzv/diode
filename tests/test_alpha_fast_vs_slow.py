@@ -11,6 +11,9 @@ We check, over many random clouds (2D/3D, exact True/False):
   * for with_attachment, that the reported attacher tau is a valid Gabriel coface:
     squared_circumradius(tau) == alpha(sigma), for BOTH fast and slow.
 """
+from collections import Counter
+from itertools import combinations
+
 import numpy as np
 import pytest
 import diode
@@ -143,6 +146,63 @@ def test_weighted_3d_fast_vs_slow_values(n, exact, wscale):
         sv = slow[k]
         assert abs(fv - sv) <= rtol * max(abs(sv), 1.0) + 1e-9, (
             f"weighted value mismatch at {k}: fast {fv} slow {sv}")
+
+
+# ---- weighted 3D PERIODIC: fast (Periodic_3_regular_triangulation_3 +
+# Edelsbrunner) vs slow (Alpha_shape_3) -------------------------------------
+# Weights must satisfy 0 <= w < 1/64 * domain^2 (CGAL's periodic-regular
+# requirement). The triangulation must be 1-sheet representable, which needs
+# enough points; the slow path raises otherwise. Like the unweighted periodic
+# case, is_Gabriel handles offsets, so for non-degenerate clouds the values match
+# Alpha_shape_3 to round-off (a few near-degenerate simplices may differ via the
+# periodic Gabriel offset ambiguity).
+@pytest.mark.parametrize("n", [1000, 2500])
+@pytest.mark.parametrize("exact", EXACTS)
+def test_weighted_periodic_3d_fast_vs_slow_values(n, exact):
+    rng = np.random.default_rng(31 * n + int(exact))
+    data = np.hstack([rng.random((n, 3)), rng.random((n, 1)) * 0.01])
+    frm, to = [0.] * 3, [1.] * 3
+    try:
+        slow = to_value_dict(diode.fill_weighted_periodic_alpha_shapes_slow(data, exact, frm, to))
+    except RuntimeError:
+        with pytest.raises(RuntimeError):
+            diode.fill_weighted_periodic_alpha_shapes(data, exact, frm, to)
+        pytest.skip("point cloud not representable in 1 sheet")
+    fast = to_value_dict(diode.fill_weighted_periodic_alpha_shapes(data, exact, frm, to))
+    assert set(fast) == set(slow), "weighted periodic simplex sets differ"
+    diffs = np.array([abs(fast[k] - slow[k]) for k in fast])
+    n_big = int((diffs > 1e-7).sum())
+    assert n_big <= max(3, len(diffs) // 100), \
+        f"{n_big}/{len(diffs)} weighted-periodic values differ -- more than offset ambiguity explains"
+    assert diffs.max(initial=0.0) < 1e-2
+
+
+# The direct path always emits a valid filtered simplicial complex -- face-closed,
+# values non-decreasing onto cofaces, no duplicate/garbage indices -- even for
+# sparse clouds near the 1-sheet boundary where the slow Alpha_shape_3 path itself
+# degenerates (emits out-of-order / garbage-indexed simplices).
+@pytest.mark.parametrize("n", [200, 800, 1500])
+@pytest.mark.parametrize("exact", EXACTS)
+def test_weighted_periodic_3d_is_valid_complex(n, exact):
+    rng = np.random.default_rng(99 * n + int(exact))
+    data = np.hstack([rng.random((n, 3)), rng.random((n, 1)) * 0.01])
+    try:
+        f = diode.fill_weighted_periodic_alpha_shapes(data, exact, [0.] * 3, [1.] * 3)
+    except RuntimeError:
+        pytest.skip("point cloud not representable in 1 sheet")
+    val = {tuple(sorted(int(x) for x in v)): a for v, a in f}
+    assert len(val) == len(f), "duplicate index-simplices emitted"
+    assert max(k[-1] for k in val) < n, "garbage (out-of-range) vertex index emitted"
+    for verts, a in f:
+        verts = sorted(int(x) for x in verts)
+        for k in range(1, len(verts)):
+            for face in combinations(verts, k):
+                fa = val.get(tuple(face))
+                assert fa is not None, f"missing face {face} of {verts}"
+                assert fa <= a + 1e-9, f"face {face} value {fa} > coface {verts} value {a}"
+    # NB the 3-torus Euler characteristic is 0 for non-degenerate clouds, but can
+    # be off at the sparse 1-sheet boundary where CGAL drops degenerate vertices;
+    # the set-match-vs-slow test above pins the topology at non-degenerate n.
 
 
 # ---- periodic 2D: fast (Delaunay-direct) vs slow (std::set) -----------------

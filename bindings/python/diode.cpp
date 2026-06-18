@@ -608,8 +608,11 @@ fill_periodic_alpha_shape_slow(py::array a, bool exact, std::vector<double> from
 { return fill_periodic_alpha_shape_impl<true>(a, exact, from_, to_, with_attachment); }
 
 #if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
+// Slow == true selects CGAL::Alpha_shape_3 on the periodic regular triangulation;
+// Slow == false the fast weighted periodic Delaunay-direct path.
+template<bool Slow>
 py::object
-fill_weighted_periodic_alpha_shape(py::array a, bool exact, std::array<double,3> from, std::array<double,3> to, bool with_attachment)
+fill_weighted_periodic_alpha_shape_impl(py::array a, bool exact, std::array<double,3> from, std::array<double,3> to, bool with_attachment)
 {
     if (with_attachment)
     {
@@ -620,33 +623,37 @@ fill_weighted_periodic_alpha_shape(py::array a, bool exact, std::array<double,3>
 
     if (a.ndim() != 2)
         throw std::runtime_error("Unknown input dimension: can only process 2D arrays");
+    if (a.shape()[1] != 4)
+        throw std::runtime_error("Can only handle 3D alpha shapes (input must be a 4-column array: coordinates + weight)");
 
-    if (a.shape()[1] == 4)
-    {
-        if (a.dtype().is(py::dtype::of<float>()))
-        {
-            AddSimplex::Simplices filtration;
-            if (exact)
-                diode::AlphaShapes<true>::fill_weighted_periodic_alpha_shapes(ArrayWrapper<float>(a), AddSimplex(&filtration), from, to);
-            else
-                diode::AlphaShapes<false>::fill_weighted_periodic_alpha_shapes(ArrayWrapper<float>(a), AddSimplex(&filtration), from, to);
-            return py::cast(filtration);
+    bool is_float  = a.dtype().is(py::dtype::of<float>());
+    bool is_double = a.dtype().is(py::dtype::of<double>());
+    if (!is_float && !is_double)
+        throw std::runtime_error("Unknown array dtype");
+
+    AddSimplex::Simplices f;
+    auto run = [&](auto etag) {
+        constexpr bool E = decltype(etag)::value;
+        if constexpr (Slow) {
+            if (is_float) diode::AlphaShapes<E>::fill_weighted_periodic_alpha_shapes(ArrayWrapper<float >(a), AddSimplex(&f), from, to);
+            else          diode::AlphaShapes<E>::fill_weighted_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex(&f), from, to);
+        } else {
+            if (is_float) diode::AlphaShapes<E>::fill_weighted_periodic_alpha_shapes_direct(ArrayWrapper<float >(a), AddSimplex(&f), from, to);
+            else          diode::AlphaShapes<E>::fill_weighted_periodic_alpha_shapes_direct(ArrayWrapper<double>(a), AddSimplex(&f), from, to);
         }
-        else if (a.dtype().is(py::dtype::of<double>()))
-        {
-            AddSimplex::Simplices filtration;
-            if (exact)
-                diode::AlphaShapes<true>::fill_weighted_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex(&filtration), from, to);
-            else
-                diode::AlphaShapes<false>::fill_weighted_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex(&filtration), from, to);
-            return py::cast(filtration);
-        }
-        else
-            throw std::runtime_error("Unknown array dtype");
-    }
-    else
-        throw std::runtime_error("Can only handle 3D alpha shapes");
+    };
+    if (exact) run(std::true_type{}); else run(std::false_type{});
+    sort_filtration(f);
+    return py::cast(f);
 }
+
+py::object
+fill_weighted_periodic_alpha_shape(py::array a, bool exact, std::array<double,3> from, std::array<double,3> to, bool with_attachment)
+{ return fill_weighted_periodic_alpha_shape_impl<false>(a, exact, from, to, with_attachment); }
+
+py::object
+fill_weighted_periodic_alpha_shape_slow(py::array a, bool exact, std::array<double,3> from, std::array<double,3> to, bool with_attachment)
+{ return fill_weighted_periodic_alpha_shape_impl<true>(a, exact, from, to, with_attachment); }
 #endif
 
 py::array
@@ -778,7 +785,17 @@ PYBIND11_MODULE(diode, m)
           "from"_a = std::array<double,3> {0.,0.,0.},
           "to"_a   = std::array<double,3> {1.,1.,1.},
           "with_attachment"_a = false,
-          "returns (sorted) alpha shape filtration of the weighted input points on a periodic domain (with_attachment=True is not yet supported)");
+          "returns (sorted) alpha shape filtration of the weighted input points on a "
+          "periodic domain. Uses the fast weighted periodic Delaunay-direct path "
+          "(Periodic_3_regular_triangulation_3 + Edelsbrunner). with_attachment=True "
+          "is not yet supported.");
+    m.def("fill_weighted_periodic_alpha_shapes_slow",  &fill_weighted_periodic_alpha_shape_slow,
+          "data"_a, "exact"_a = false,
+          "from"_a = std::array<double,3> {0.,0.,0.},
+          "to"_a   = std::array<double,3> {1.,1.,1.},
+          "with_attachment"_a = false,
+          "Reference implementation of fill_weighted_periodic_alpha_shapes kept for "
+          "testing: uses CGAL::Alpha_shape_3 on the periodic regular triangulation.");
 #endif
     m.def("circumcenter", &circumcenter, "points"_a, "exact"_a = false, "returns circumcenter of the intput points");
 }
