@@ -2316,3 +2316,147 @@ fill_periodic_delaunay(const Points& points, const SimplexCallback& add_simplex,
         if (idx < seen_v.size() && !seen_v[idx]) { seen_v[idx] = 1; add_simplex(std::array<unsigned, 1>{ idx }); }
     }
 }
+
+template<bool exact>
+template<class Points, class SimplexCallback>
+void
+diode::AlphaShapes<exact>::
+fill_weighted_delaunay(const Points& points, const SimplexCallback& add_simplex)
+{
+    using K     = detail::Kernel<exact>;
+    using Vb0   = CGAL::Regular_triangulation_vertex_base_3<K>;
+    using Vb    = CGAL::Triangulation_vertex_base_with_info_3<unsigned, K, Vb0>;
+    using Cb    = CGAL::Regular_triangulation_cell_base_3<K>;
+    using TDS   = CGAL::Triangulation_data_structure_3<Vb, Cb>;
+    using RT    = CGAL::Regular_triangulation_3<K, TDS>;
+    using Weighted_point = typename RT::Weighted_point;
+    using Bare_point     = typename RT::Bare_point;
+
+    RT rt;
+    {
+        std::vector<std::pair<Weighted_point, unsigned>> wpts;
+        wpts.reserve(points.size());
+        for (unsigned i = 0; i < points.size(); ++i)
+            wpts.emplace_back(Weighted_point(Bare_point(points(i, 0), points(i, 1), points(i, 2)),
+                                             points(i, 3)), i);
+        rt.insert(wpts.begin(), wpts.end());
+    }
+
+    // dim 3 (tetrahedra)
+    for (auto cit = rt.finite_cells_begin(); cit != rt.finite_cells_end(); ++cit)
+        add_simplex(std::array<unsigned, 4>{ cit->vertex(0)->info(), cit->vertex(1)->info(),
+                                             cit->vertex(2)->info(), cit->vertex(3)->info() });
+    // dim 2 (facets)
+    for (auto fit = rt.finite_facets_begin(); fit != rt.finite_facets_end(); ++fit) {
+        typename RT::Cell_handle c = fit->first;
+        int i = fit->second;
+        add_simplex(std::array<unsigned, 3>{ c->vertex((i + 1) & 3)->info(),
+                                             c->vertex((i + 2) & 3)->info(),
+                                             c->vertex((i + 3) & 3)->info() });
+    }
+    // dim 1 (edges)
+    for (auto eit = rt.finite_edges_begin(); eit != rt.finite_edges_end(); ++eit)
+        add_simplex(std::array<unsigned, 2>{ eit->first->vertex(eit->second)->info(),
+                                             eit->first->vertex(eit->third)->info() });
+    // dim 0 (vertices)
+    for (auto vit = rt.finite_vertices_begin(); vit != rt.finite_vertices_end(); ++vit)
+        add_simplex(std::array<unsigned, 1>{ vit->info() });
+}
+
+#if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
+template<bool exact>
+template<class Points, class SimplexCallback>
+void
+diode::AlphaShapes<exact>::
+fill_weighted_periodic_delaunay(const Points& points, const SimplexCallback& add_simplex,
+                                std::array<double, 3> from, std::array<double, 3> to)
+{
+    using K      = detail::Kernel<exact>;
+    using PK     = CGAL::Periodic_3_regular_triangulation_traits_3<K>;
+    using DsVb   = CGAL::Periodic_3_triangulation_ds_vertex_base_3<>;
+    using Vb     = CGAL::Regular_triangulation_vertex_base_3<PK, DsVb>;
+    using VbInfo = CGAL::Triangulation_vertex_base_with_info_3<unsigned, PK, Vb>;
+    using DsCb   = CGAL::Periodic_3_triangulation_ds_cell_base_3<>;
+    using Cb     = CGAL::Regular_triangulation_cell_base_3<PK, DsCb>;
+    using TDS    = CGAL::Triangulation_data_structure_3<VbInfo, Cb>;
+    using PRT    = CGAL::Periodic_3_regular_triangulation_3<PK, TDS>;
+    using Weighted_point = typename PRT::Weighted_point;
+    using Bare_point     = typename PRT::Bare_point;
+    using Cell_handle    = typename PRT::Cell_handle;
+
+    double domain_size = to[0] - from[0];
+    double upper_bound = 0.015625 * domain_size * domain_size;
+
+    PRT pdt(typename PK::Iso_cuboid_3(from[0], from[1], from[2], to[0], to[1], to[2]));
+    std::map<Weighted_point, unsigned> point_index;
+    for (unsigned i = 0; i < points.size(); ++i) {
+        double w = points(i, 3);
+        if (w < 0 || w >= upper_bound) {
+            std::ostringstream oss;
+            oss << "Point weight w must satisfy: 0 <= w < 1/64 * domain_size * domain_size; but got point"
+                << " (" << points(i, 0) << ", " << points(i, 1) << ", " << points(i, 2) << ") weight = " << w;
+            throw std::runtime_error(oss.str());
+        }
+        point_index[Weighted_point(Bare_point(points(i, 0), points(i, 1), points(i, 2)), w)] = i;
+    }
+    {
+        std::vector<Weighted_point> wpts;
+        wpts.reserve(point_index.size());
+        for (const auto& kv : point_index)
+            wpts.push_back(kv.first);
+        pdt.insert(wpts.begin(), wpts.end(), true);
+    }
+    if (pdt.is_triangulation_in_1_sheet())
+        pdt.convert_to_1_sheeted_covering();
+    else
+        throw std::runtime_error("Cannot convert to 1-sheeted covering");
+
+    constexpr unsigned k_no_index = static_cast<unsigned>(-1);
+    for (auto vit = pdt.vertices_begin(); vit != pdt.vertices_end(); ++vit) {
+        auto it = point_index.find(vit->point());
+        vit->info() = (it != point_index.end()) ? it->second : k_no_index;
+    }
+
+    struct Key4 { unsigned a, b, c, d; bool operator==(const Key4& o) const { return a == o.a && b == o.b && c == o.c && d == o.d; } };
+    struct Key4Hash { std::size_t operator()(const Key4& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; h = h * 1000003u ^ k.c; h = h * 1000003u ^ k.d; return h; } };
+    auto key4 = [](unsigned a, unsigned b, unsigned c, unsigned d) { unsigned v[4] = { a, b, c, d }; std::sort(v, v + 4); return Key4{ v[0], v[1], v[2], v[3] }; };
+    struct Key3 { unsigned a, b, c; bool operator==(const Key3& o) const { return a == o.a && b == o.b && c == o.c; } };
+    struct Key3Hash { std::size_t operator()(const Key3& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; h = h * 1000003u ^ k.c; return h; } };
+    auto key3 = [](unsigned a, unsigned b, unsigned c) { if (a > b) std::swap(a, b); if (b > c) std::swap(b, c); if (a > b) std::swap(a, b); return Key3{a, b, c}; };
+    struct Key2 { unsigned a, b; bool operator==(const Key2& o) const { return a == o.a && b == o.b; } };
+    struct Key2Hash { std::size_t operator()(const Key2& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; return h; } };
+    auto key2 = [](unsigned a, unsigned b) { if (a > b) std::swap(a, b); return Key2{a, b}; };
+    auto bad = [&](std::initializer_list<unsigned> xs) { for (unsigned x : xs) if (x == k_no_index) return true; return false; };
+
+    std::unordered_set<Key4, Key4Hash> cells;
+    for (auto cit = pdt.cells_begin(); cit != pdt.cells_end(); ++cit) {
+        unsigned i0 = cit->vertex(0)->info(), i1 = cit->vertex(1)->info(),
+                 i2 = cit->vertex(2)->info(), i3 = cit->vertex(3)->info();
+        if (bad({i0, i1, i2, i3})) continue;
+        Key4 k = key4(i0, i1, i2, i3);
+        if (cells.insert(k).second) add_simplex(std::array<unsigned, 4>{ k.a, k.b, k.c, k.d });
+    }
+    std::unordered_set<Key3, Key3Hash> facets;
+    for (auto fit = pdt.facets_begin(); fit != pdt.facets_end(); ++fit) {
+        Cell_handle c = fit->first;
+        int i = fit->second;
+        unsigned f0 = c->vertex((i + 1) & 3)->info(), f1 = c->vertex((i + 2) & 3)->info(), f2 = c->vertex((i + 3) & 3)->info();
+        if (bad({f0, f1, f2})) continue;
+        Key3 k = key3(f0, f1, f2);
+        if (facets.insert(k).second) add_simplex(std::array<unsigned, 3>{ k.a, k.b, k.c });
+    }
+    std::unordered_set<Key2, Key2Hash> edges;
+    for (auto eit = pdt.edges_begin(); eit != pdt.edges_end(); ++eit) {
+        Cell_handle c = eit->first;
+        unsigned e0 = c->vertex(eit->second)->info(), e1 = c->vertex(eit->third)->info();
+        if (bad({e0, e1})) continue;
+        Key2 k = key2(e0, e1);
+        if (edges.insert(k).second) add_simplex(std::array<unsigned, 2>{ k.a, k.b });
+    }
+    std::vector<char> seen_v(points.size(), 0);
+    for (auto vit = pdt.vertices_begin(); vit != pdt.vertices_end(); ++vit) {
+        unsigned idx = vit->info();
+        if (idx < seen_v.size() && !seen_v[idx]) { seen_v[idx] = 1; add_simplex(std::array<unsigned, 1>{ idx }); }
+    }
+}
+#endif

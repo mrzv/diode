@@ -141,3 +141,50 @@ def test_periodic_delaunay_matches_alpha_simplex_set(dim, exact):
 def test_periodic_delaunay_functions_exist():
     assert hasattr(diode, "fill_periodic_delaunay")
     assert hasattr(diode, "fill_periodic_delaunay_arrays")
+
+
+# ---- weighted combinatorics (regular triangulation) vs the weighted alpha set ---
+def weighted_alpha_set(data, exact):
+    return {frozenset(int(v) for v in verts)
+            for verts, _ in diode.fill_weighted_alpha_shapes(data, exact=exact)}
+
+
+@pytest.mark.parametrize("n", [50, 200, 800])
+@pytest.mark.parametrize("exact", EXACTS)
+def test_weighted_delaunay_matches_alpha_simplex_set(n, exact):
+    rng = np.random.default_rng(5500 * n + int(exact))
+    data = np.hstack([rng.random((n, 3)), rng.random((n, 1)) * 0.05])
+    s_alpha = weighted_alpha_set(data, exact)
+    dl_list = diode.fill_weighted_delaunay(data, exact=exact)
+    s_list = list_simplex_set(dl_list)
+    assert len(dl_list) == len(s_list), "fill_weighted_delaunay emitted duplicates"
+    assert s_list == s_alpha
+    s_arr = arrays_simplex_set(diode.fill_weighted_delaunay_arrays(data, exact=exact))
+    assert s_arr == s_alpha
+
+
+@pytest.mark.parametrize("n", [1000, 2500])
+@pytest.mark.parametrize("exact", EXACTS)
+def test_weighted_periodic_delaunay_matches_alpha_simplex_set(n, exact):
+    rng = np.random.default_rng(6500 * n + int(exact))
+    data = np.hstack([rng.random((n, 3)), rng.random((n, 1)) * 0.01])
+    frm, to = [0.] * 3, [1.] * 3
+    try:
+        s_alpha = {frozenset(int(v) for v in verts)
+                   for verts, _ in diode.fill_weighted_periodic_alpha_shapes(data, exact, frm, to)}
+    except RuntimeError:
+        with pytest.raises(RuntimeError):
+            diode.fill_weighted_periodic_delaunay(data, exact, frm, to)
+        pytest.skip("not 1-sheet")
+    dl_list = diode.fill_weighted_periodic_delaunay(data, exact, frm, to)
+    s_list = list_simplex_set(dl_list)
+    assert len(dl_list) == len(s_list), "fill_weighted_periodic_delaunay emitted duplicates"
+    assert s_list == s_alpha
+    s_arr = arrays_simplex_set(diode.fill_weighted_periodic_delaunay_arrays(data, exact, frm, to))
+    assert s_arr == s_alpha
+
+
+def test_weighted_delaunay_functions_exist():
+    for name in ("fill_weighted_delaunay", "fill_weighted_delaunay_arrays",
+                 "fill_weighted_periodic_delaunay", "fill_weighted_periodic_delaunay_arrays"):
+        assert hasattr(diode, name)

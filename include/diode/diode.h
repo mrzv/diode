@@ -117,6 +117,22 @@ struct AlphaShapes
     template<class Points, class SimplexCallback>
     static void fill_delaunay(const Points& points, const SimplexCallback& add_simplex);
 
+    // Combinatorics-only export (3D, weighted): the Regular_triangulation_3 simplices
+    // (== the weighted alpha-complex simplex set) by vertex index, WITHOUT any alpha
+    // value. Input is a 4-column array (x, y, z, weight). Redundant (hidden) weighted
+    // points are absent, like fill_weighted_alpha_shapes. Callback: add_simplex(vertices).
+    template<class Points, class SimplexCallback>
+    static void fill_weighted_delaunay(const Points& points, const SimplexCallback& add_simplex);
+
+    // Combinatorics-only export (3D, weighted, periodic): like fill_weighted_delaunay
+    // but on a Periodic_3_regular_triangulation_3 over [from, to]. Each canonical
+    // simplex is emitted once (deduplicated by vertex-index set); degenerate vertices
+    // at the 1-sheet boundary are dropped so the output stays a valid complex.
+    // No alpha values. Callback: add_simplex(vertices).
+    template<class Points, class SimplexCallback>
+    static void fill_weighted_periodic_delaunay(const Points& points, const SimplexCallback& add_simplex,
+                                    std::array<double, 3> from, std::array<double, 3> to);
+
     // Combinatorics-only export (3D, unweighted, periodic): like fill_delaunay but
     // on a Periodic_3_Delaunay_triangulation_3 over the cuboid [from, to]. Each
     // canonical simplex is emitted once (deduplicated by vertex-index set, matching

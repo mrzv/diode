@@ -372,6 +372,92 @@ fill_periodic_delaunay(py::array a, bool exact, std::vector<double> from_, std::
     return py::cast(f);
 }
 
+// ---- weighted combinatorics-only (regular triangulation, no alpha values) ----
+
+template<class Cb>
+void run_weighted_delaunay_traversal(py::array a, bool exact, const Cb& cb)
+{
+    if (a.ndim() != 2 || a.shape()[1] != 4)
+        throw std::runtime_error("weighted input must be a 4-column array (x, y, z, weight)");
+    if (a.dtype().is(py::dtype::of<float>())) {
+        if (exact) diode::AlphaShapes<true >::fill_weighted_delaunay(ArrayWrapper<float >(a), cb);
+        else       diode::AlphaShapes<false>::fill_weighted_delaunay(ArrayWrapper<float >(a), cb);
+    } else if (a.dtype().is(py::dtype::of<double>())) {
+        if (exact) diode::AlphaShapes<true >::fill_weighted_delaunay(ArrayWrapper<double>(a), cb);
+        else       diode::AlphaShapes<false>::fill_weighted_delaunay(ArrayWrapper<double>(a), cb);
+    } else
+        throw std::runtime_error("Unknown array dtype");
+}
+
+py::object
+fill_weighted_delaunay_arrays(py::array a, bool exact)
+{
+    AddSimplexArraysNoVal::Verts verts;
+    run_weighted_delaunay_traversal(a, exact, AddSimplexArraysNoVal { &verts });
+    int max_dim = -1;
+    for (int d = 0; d < 4; ++d) if (!verts[d].empty()) max_dim = d;
+    py::list verts_by_dim;
+    for (int d = 0; d <= max_dim; ++d) {
+        py::ssize_t w = d + 1;
+        py::ssize_t n = static_cast<py::ssize_t>(verts[d].size()) / w;
+        verts_by_dim.append(vector_to_numpy(std::move(verts[d]), { n, w }));
+    }
+    return verts_by_dim;
+}
+
+py::object
+fill_weighted_delaunay(py::array a, bool exact)
+{
+    AddSimplexNoVal::Simplices f;
+    run_weighted_delaunay_traversal(a, exact, AddSimplexNoVal { &f });
+    return py::cast(f);
+}
+
+#if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
+template<class Cb>
+void run_weighted_periodic_delaunay_traversal(py::array a, bool exact,
+                                              std::vector<double> from_, std::vector<double> to_, const Cb& cb)
+{
+    if (a.ndim() != 2 || a.shape()[1] != 4)
+        throw std::runtime_error("weighted input must be a 4-column array (x, y, z, weight)");
+    std::array<double,3> from { from_[0], from_[1], from_[2] }, to { to_[0], to_[1], to_[2] };
+    auto run = [&](auto etag) {
+        constexpr bool E = decltype(etag)::value;
+        if (a.dtype().is(py::dtype::of<float>()))
+            diode::AlphaShapes<E>::fill_weighted_periodic_delaunay(ArrayWrapper<float >(a), cb, from, to);
+        else if (a.dtype().is(py::dtype::of<double>()))
+            diode::AlphaShapes<E>::fill_weighted_periodic_delaunay(ArrayWrapper<double>(a), cb, from, to);
+        else
+            throw std::runtime_error("Unknown array dtype");
+    };
+    if (exact) run(std::true_type{}); else run(std::false_type{});
+}
+
+py::object
+fill_weighted_periodic_delaunay_arrays(py::array a, bool exact, std::vector<double> from_, std::vector<double> to_)
+{
+    AddSimplexArraysNoVal::Verts verts;
+    run_weighted_periodic_delaunay_traversal(a, exact, from_, to_, AddSimplexArraysNoVal { &verts });
+    int max_dim = -1;
+    for (int d = 0; d < 4; ++d) if (!verts[d].empty()) max_dim = d;
+    py::list verts_by_dim;
+    for (int d = 0; d <= max_dim; ++d) {
+        py::ssize_t w = d + 1;
+        py::ssize_t n = static_cast<py::ssize_t>(verts[d].size()) / w;
+        verts_by_dim.append(vector_to_numpy(std::move(verts[d]), { n, w }));
+    }
+    return verts_by_dim;
+}
+
+py::object
+fill_weighted_periodic_delaunay(py::array a, bool exact, std::vector<double> from_, std::vector<double> to_)
+{
+    AddSimplexNoVal::Simplices f;
+    run_weighted_periodic_delaunay_traversal(a, exact, from_, to_, AddSimplexNoVal { &f });
+    return py::cast(f);
+}
+#endif
+
 #ifdef DIODE_HAVE_OINEUS
 // MUST match Oineus's bindings: OINEUS_PYTHON_INT (long), OINEUS_PYTHON_REAL
 // (double). Oineus copies the cells out of the capsule, so allocator backends
@@ -745,6 +831,29 @@ PYBIND11_MODULE(diode, m)
           "to"_a   = std::vector<double> {1.,1.,1.},
           "Periodic Delaunay simplices as a flat list of vertex lists, WITHOUT alpha\n"
           "values. List form of fill_periodic_delaunay_arrays.");
+    m.def("fill_weighted_delaunay_arrays", &fill_weighted_delaunay_arrays,
+          "data"_a, "exact"_a = false,
+          "Regular-triangulation (weighted Delaunay) simplices as per-dimension NumPy\n"
+          "arrays WITHOUT alpha values, for a 4-column input (x, y, z, weight). Same\n"
+          "shape as fill_delaunay_arrays. Hidden (redundant) weighted points are absent.");
+    m.def("fill_weighted_delaunay", &fill_weighted_delaunay,
+          "data"_a, "exact"_a = false,
+          "Weighted Delaunay (regular triangulation) simplices as a flat list of vertex\n"
+          "lists, WITHOUT alpha values. List form of fill_weighted_delaunay_arrays.");
+#if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
+    m.def("fill_weighted_periodic_delaunay_arrays", &fill_weighted_periodic_delaunay_arrays,
+          "data"_a, "exact"_a = false,
+          "from"_a = std::vector<double> {0.,0.,0.},
+          "to"_a   = std::vector<double> {1.,1.,1.},
+          "Periodic weighted Delaunay (regular triangulation) simplices as per-dimension\n"
+          "NumPy arrays WITHOUT alpha values. Each canonical simplex appears once.");
+    m.def("fill_weighted_periodic_delaunay", &fill_weighted_periodic_delaunay,
+          "data"_a, "exact"_a = false,
+          "from"_a = std::vector<double> {0.,0.,0.},
+          "to"_a   = std::vector<double> {1.,1.,1.},
+          "Periodic weighted Delaunay simplices as a flat list of vertex lists, WITHOUT\n"
+          "alpha values. List form of fill_weighted_periodic_delaunay_arrays.");
+#endif
 #ifdef DIODE_HAVE_OINEUS
     m.def("fill_alpha_shapes_cells", &fill_alpha_shapes_cells,
           "data"_a, "exact"_a = false,
