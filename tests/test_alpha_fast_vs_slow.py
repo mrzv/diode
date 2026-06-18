@@ -119,6 +119,30 @@ def test_fast_matches_slow_with_attachment(dim, n, exact):
 def test_slow_function_exists():
     assert hasattr(diode, "fill_alpha_shapes_slow")
     assert hasattr(diode, "fill_periodic_alpha_shapes_slow")
+    assert hasattr(diode, "fill_weighted_alpha_shapes_slow")
+
+
+# ---- weighted 3D: fast (Regular_triangulation_3 + Edelsbrunner) vs slow
+# (Alpha_shape_3 on the regular triangulation) ------------------------------
+# Input is a 4-column array (x, y, z, weight). The direct path uses CGAL's
+# Regular_triangulation_3::is_Gabriel -- including is_Gabriel(vertex), since a
+# weighted vertex (unlike an unweighted one) need not be Gabriel -- so the values
+# match Alpha_shape_3 to round-off, not just up to an approximation.
+@pytest.mark.parametrize("n", [50, 200, 800])
+@pytest.mark.parametrize("exact", EXACTS)
+@pytest.mark.parametrize("wscale", [0.01, 0.1])
+def test_weighted_3d_fast_vs_slow_values(n, exact, wscale):
+    rng = np.random.default_rng(8000 * n + 17 * int(exact) + int(1000 * wscale))
+    data = np.hstack([rng.random((n, 3)), rng.random((n, 1)) * wscale])
+    fast = to_value_dict(diode.fill_weighted_alpha_shapes(data, exact=exact))
+    slow = to_value_dict(diode.fill_weighted_alpha_shapes_slow(data, exact=exact))
+    assert set(fast) == set(slow), (
+        f"weighted simplex sets differ (fast {len(fast)}, slow {len(slow)})")
+    rtol = 1e-12 if exact else 1e-6
+    for k, fv in fast.items():
+        sv = slow[k]
+        assert abs(fv - sv) <= rtol * max(abs(sv), 1.0) + 1e-9, (
+            f"weighted value mismatch at {k}: fast {fv} slow {sv}")
 
 
 # ---- periodic 2D: fast (Delaunay-direct) vs slow (std::set) -----------------

@@ -74,6 +74,18 @@ struct AlphaShapes
     template<class Points, class SimplexCallback>
     static void fill_weighted_alpha_shapes(const Points& points, const SimplexCallback& add_simplex);
 
+    // Faster equivalent of fill_weighted_alpha_shapes (3D weighted): weighted
+    // Edelsbrunner on a plain Regular_triangulation_3 (input index in vertex info,
+    // weighted squared radius cached in cell info) instead of CGAL::Alpha_shape_3.
+    // alpha = squared radius of the smallest orthogonal sphere through a simplex's
+    // weighted vertices (vertices: -weight) for Gabriel simplices (CGAL's
+    // Regular_triangulation_3::is_Gabriel), else min over cofaces. Hidden (redundant)
+    // weighted points are omitted, like the slow path. Input is a 4-column array
+    // (x, y, z, weight). Produces the same (simplex, alpha) set as
+    // fill_weighted_alpha_shapes. Simplices emitted unsorted.
+    template<class Points, class SimplexCallback>
+    static void fill_weighted_alpha_shapes_direct(const Points& points, const SimplexCallback& add_simplex);
+
     template<class Points, class SimplexCallback>
     static void fill_periodic_alpha_shapes(const Points& points, const SimplexCallback& add_simplex,
                                     std::array<double, 3> from, std::array<double, 3> to);

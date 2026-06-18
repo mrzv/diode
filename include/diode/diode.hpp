@@ -680,6 +680,150 @@ template<bool exact>
 template<class Points, class SimplexCallback>
 void
 diode::AlphaShapes<exact>::
+fill_weighted_alpha_shapes_direct(const Points& points, const SimplexCallback& add_simplex)
+{
+    using K     = detail::Kernel<exact>;
+    using Vb0   = CGAL::Regular_triangulation_vertex_base_3<K>;
+    using Vb    = CGAL::Triangulation_vertex_base_with_info_3<unsigned, K, Vb0>;
+    using Cb0   = CGAL::Regular_triangulation_cell_base_3<K>;
+    using Cb    = CGAL::Triangulation_cell_base_with_info_3<double, K, Cb0>;
+    using TDS   = CGAL::Triangulation_data_structure_3<Vb, Cb>;
+    using RT    = CGAL::Regular_triangulation_3<K, TDS>;
+    using Weighted_point = typename RT::Weighted_point;
+    using Bare_point     = typename RT::Bare_point;
+
+    // Bulk-insert weighted points carrying their original index in vertex info, so
+    // vertex->info() is an O(1) lookup. Redundant points are hidden by the regular
+    // triangulation (no vertex), so they are simply absent from the output.
+    RT rt;
+    {
+        std::vector<std::pair<Weighted_point, unsigned>> wpts;
+        wpts.reserve(points.size());
+        for (unsigned i = 0; i < points.size(); ++i)
+            wpts.emplace_back(Weighted_point(Bare_point(points(i, 0), points(i, 1), points(i, 2)),
+                                             points(i, 3)), i);
+        rt.insert(wpts.begin(), wpts.end());
+    }
+
+    // squared radius of the smallest orthogonal sphere through weighted vertices:
+    // 4 args -> cell, 3 -> facet, 2 -> edge, 1 -> vertex (returns -weight). Respects
+    // `exact` via to_floating_point (identity for EPICK).
+    auto cr = K().compute_squared_radius_smallest_orthogonal_sphere_3_object();
+    auto sq = [&](auto&&... wps) { return detail::to_floating_point(cr(wps...)); };
+
+    struct Key3 {
+        unsigned a, b, c;
+        bool operator==(const Key3& o) const { return a == o.a && b == o.b && c == o.c; }
+    };
+    struct Key3Hash {
+        std::size_t operator()(const Key3& k) const
+        { std::size_t h = k.a; h = h * 1000003u ^ k.b; h = h * 1000003u ^ k.c; return h; }
+    };
+    auto key3 = [](unsigned a, unsigned b, unsigned c) {
+        if (a > b) std::swap(a, b);
+        if (b > c) std::swap(b, c);
+        if (a > b) std::swap(a, b);
+        return Key3{a, b, c};
+    };
+    struct Key2 {
+        unsigned a, b;
+        bool operator==(const Key2& o) const { return a == o.a && b == o.b; }
+    };
+    struct Key2Hash {
+        std::size_t operator()(const Key2& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; return h; }
+    };
+    auto key2 = [](unsigned a, unsigned b) { if (a > b) std::swap(a, b); return Key2{a, b}; };
+    auto facet_idx = [](typename RT::Cell_handle c, int i) {
+        return std::array<unsigned, 3>{ c->vertex((i + 1) & 3)->info(),
+                                        c->vertex((i + 2) & 3)->info(),
+                                        c->vertex((i + 3) & 3)->info() };
+    };
+
+    // dim 3 (tetrahedra): alpha = weighted squared circumradius; stash for facets
+    for (auto cit = rt.finite_cells_begin(); cit != rt.finite_cells_end(); ++cit) {
+        double a = sq(cit->vertex(0)->point(), cit->vertex(1)->point(),
+                      cit->vertex(2)->point(), cit->vertex(3)->point());
+        cit->info() = a;
+        add_simplex(std::array<unsigned, 4>{ cit->vertex(0)->info(), cit->vertex(1)->info(),
+                                             cit->vertex(2)->info(), cit->vertex(3)->info() }, a);
+    }
+
+    // dim 2 (facets): Gabriel ? own : min over the <=2 incident cells
+    std::unordered_map<Key3, double, Key3Hash> facet_alpha;
+    facet_alpha.reserve(rt.number_of_finite_facets());
+    for (auto fit = rt.finite_facets_begin(); fit != rt.finite_facets_end(); ++fit) {
+        typename RT::Facet f = *fit;
+        typename RT::Cell_handle c = f.first;
+        int i = f.second;
+        auto vs = facet_idx(c, i);
+        double a;
+        if (rt.is_Gabriel(f)) {
+            a = sq(c->vertex((i + 1) & 3)->point(), c->vertex((i + 2) & 3)->point(),
+                   c->vertex((i + 3) & 3)->point());
+        } else {
+            typename RT::Cell_handle c1 = c->neighbor(i);
+            double best = std::numeric_limits<double>::infinity();
+            if (!rt.is_infinite(c))  best = std::min(best, c->info());
+            if (!rt.is_infinite(c1)) best = std::min(best, c1->info());
+            a = best;
+        }
+        facet_alpha.emplace(key3(vs[0], vs[1], vs[2]), a);
+        add_simplex(vs, a);
+    }
+
+    // dim 1 (edges): Gabriel ? own : min over incident facets; stash for vertices
+    std::unordered_map<Key2, double, Key2Hash> edge_alpha;
+    for (auto eit = rt.finite_edges_begin(); eit != rt.finite_edges_end(); ++eit) {
+        typename RT::Edge e = *eit;
+        auto vh0 = e.first->vertex(e.second);
+        auto vh1 = e.first->vertex(e.third);
+        std::array<unsigned, 2> vs{ vh0->info(), vh1->info() };
+        double a;
+        if (rt.is_Gabriel(e)) {
+            a = sq(vh0->point(), vh1->point());
+        } else {
+            double best = std::numeric_limits<double>::infinity();
+            typename RT::Facet_circulator fc = rt.incident_facets(e), fdone = fc;
+            do {
+                if (!rt.is_infinite(*fc)) {
+                    auto fv = facet_idx(fc->first, fc->second);
+                    auto it = facet_alpha.find(key3(fv[0], fv[1], fv[2]));
+                    if (it != facet_alpha.end()) best = std::min(best, it->second);
+                }
+            } while (++fc != fdone);
+            a = best;
+        }
+        edge_alpha.emplace(key2(vs[0], vs[1]), a);
+        add_simplex(vs, a);
+    }
+
+    // dim 0 (vertices): unlike the unweighted case, a weighted vertex need not be
+    // Gabriel -- its own smallest orthogonal sphere (squared radius -weight) may be
+    // non-empty. Gabriel ? -weight : min over incident edges.
+    std::vector<typename RT::Edge> inc_edges;
+    for (auto vit = rt.finite_vertices_begin(); vit != rt.finite_vertices_end(); ++vit) {
+        double a;
+        if (rt.is_Gabriel(vit)) {
+            a = sq(vit->point());
+        } else {
+            double best = std::numeric_limits<double>::infinity();
+            inc_edges.clear();
+            rt.finite_incident_edges(vit, std::back_inserter(inc_edges));
+            for (const auto& e : inc_edges) {
+                auto it = edge_alpha.find(key2(e.first->vertex(e.second)->info(),
+                                               e.first->vertex(e.third)->info()));
+                if (it != edge_alpha.end()) best = std::min(best, it->second);
+            }
+            a = best;
+        }
+        add_simplex(std::array<unsigned, 1>{ vit->info() }, a);
+    }
+}
+
+template<bool exact>
+template<class Points, class SimplexCallback>
+void
+diode::AlphaShapes<exact>::
 fill_periodic_alpha_shapes(const Points& points, const SimplexCallback& add_simplex,
                            std::array<double, 3> from, std::array<double, 3> to)
 {
