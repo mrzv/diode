@@ -563,8 +563,13 @@ fill_periodic_alpha_shape_impl(py::array a, bool exact, std::vector<double> from
         std::array<double,3> from { from_[0], from_[1], from_[2] }, to { to_[0], to_[1], to_[2] };
         auto run = [&](auto etag) {
             constexpr bool E = decltype(etag)::value;
-            if (is_float) diode::AlphaShapes<E>::fill_periodic_alpha_shapes(ArrayWrapper<float >(a), AddSimplex(&f), from, to);
-            else          diode::AlphaShapes<E>::fill_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex(&f), from, to);
+            if constexpr (Slow) {
+                if (is_float) diode::AlphaShapes<E>::fill_periodic_alpha_shapes(ArrayWrapper<float >(a), AddSimplex(&f), from, to);
+                else          diode::AlphaShapes<E>::fill_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex(&f), from, to);
+            } else {
+                if (is_float) diode::AlphaShapes<E>::fill_periodic_alpha_shapes_direct(ArrayWrapper<float >(a), AddSimplex(&f), from, to);
+                else          diode::AlphaShapes<E>::fill_periodic_alpha_shapes_direct(ArrayWrapper<double>(a), AddSimplex(&f), from, to);
+            }
         };
         if (exact) run(std::true_type{}); else run(std::false_type{});
     }

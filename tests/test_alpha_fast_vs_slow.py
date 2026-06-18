@@ -154,6 +154,33 @@ def _gudhi_diagram(filtration, dim, gudhi):
     return d[np.isfinite(d).all(axis=1)] if d.size else d   # finite bars only
 
 
+# ---- periodic 3D: fast (Delaunay-direct + CGAL periodic is_Gabriel) vs slow
+# (Alpha_shape_3) ------------------------------------------------------------
+# Unlike the 2D direct path (which does a frame-mixed manual Gabriel test), the
+# 3D direct path uses CGAL's Periodic_3_Delaunay_triangulation_3::is_Gabriel,
+# which handles offsets internally -- the same predicate Alpha_shape_3 uses. So
+# the values agree to ~1e-16, not just up to offset ambiguity. The periodic
+# triangulation must be representable in 1 sheet (needs enough points in 3D);
+# both paths raise the same error otherwise.
+@pytest.mark.parametrize("n", [200, 800, 2000])
+@pytest.mark.parametrize("exact", EXACTS)
+def test_periodic_3d_fast_vs_slow_values(n, exact):
+    rng = np.random.default_rng(7000 * n + int(exact))
+    pts = rng.random((n, 3))
+    try:
+        slow = to_value_dict(diode.fill_periodic_alpha_shapes_slow(pts, exact, [0.]*3, [1.]*3))
+    except RuntimeError:
+        with pytest.raises(RuntimeError):
+            diode.fill_periodic_alpha_shapes(pts, exact, [0.]*3, [1.]*3)
+        pytest.skip("point cloud not representable in 1 sheet")
+    fast = to_value_dict(diode.fill_periodic_alpha_shapes(pts, exact, [0.]*3, [1.]*3))
+    assert set(fast) == set(slow), "periodic 3D simplex sets differ"
+    diffs = np.array([abs(fast[k] - slow[k]) for k in fast])
+    # CGAL is_Gabriel makes the direct values match Alpha_shape_3 to round-off.
+    assert diffs.max(initial=0.0) < 1e-7, \
+        f"periodic 3D value difference too large: {diffs.max(initial=0.0):.2e}"
+
+
 @pytest.mark.parametrize("n", [100, 500, 1500])
 def test_periodic_2d_fast_vs_slow_diagram(n):
     # Optional, stronger check: persistence diagrams agree under bottleneck

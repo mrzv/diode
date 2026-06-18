@@ -719,6 +719,125 @@ fill_periodic_alpha_shapes(const Points& points, const SimplexCallback& add_simp
 }
 
 template<bool exact>
+template<class Points, class SimplexCallback>
+void
+diode::AlphaShapes<exact>::
+fill_periodic_alpha_shapes_direct(const Points& points, const SimplexCallback& add_simplex,
+                                  std::array<double, 3> from, std::array<double, 3> to)
+{
+    using K      = detail::Kernel<exact>;
+    using PK     = CGAL::Periodic_3_Delaunay_triangulation_traits_3<K>;
+    using DsVb   = CGAL::Periodic_3_triangulation_ds_vertex_base_3<>;
+    using Vb     = CGAL::Triangulation_vertex_base_3<PK, DsVb>;
+    using VbInfo = CGAL::Triangulation_vertex_base_with_info_3<unsigned, PK, Vb>;
+    using DsCb   = CGAL::Periodic_3_triangulation_ds_cell_base_3<>;
+    using Cb     = CGAL::Triangulation_cell_base_3<PK, DsCb>;
+    using CbInfo = CGAL::Triangulation_cell_base_with_info_3<double, PK, Cb>;
+    using TDS    = CGAL::Triangulation_data_structure_3<VbInfo, CbInfo>;
+    using PDT    = CGAL::Periodic_3_Delaunay_triangulation_3<PK, TDS>;
+    using Point         = typename PDT::Point;
+    using Vertex_handle = typename PDT::Vertex_handle;
+    using Cell_handle   = typename PDT::Cell_handle;
+
+    // Insert one at a time so we can stash the input index in the vertex info.
+    PDT pdt(typename PK::Iso_cuboid_3(from[0], from[1], from[2], to[0], to[1], to[2]));
+    for (unsigned i = 0; i < points.size(); ++i) {
+        Vertex_handle vh = pdt.insert(Point(points(i, 0), points(i, 1), points(i, 2)));
+        if (vh != Vertex_handle())
+            vh->info() = i;
+    }
+    if (pdt.is_triangulation_in_1_sheet())
+        pdt.convert_to_1_sheeted_covering();
+    else
+        throw std::runtime_error("Cannot convert to 1-sheeted covering");
+
+    // Offset-corrected squared circumradius (pdt.point applies the cell's offset).
+    auto sq = [](auto&&... ps) { return detail::to_floating_point(CGAL::squared_radius(ps...)); };
+
+    // Periodic CGAL reports a canonical simplex once per offset; dedup by
+    // vertex-index set, keeping the smallest alpha across the offset copies.
+    struct Key4 { unsigned a, b, c, d; bool operator==(const Key4& o) const { return a == o.a && b == o.b && c == o.c && d == o.d; } };
+    struct Key4Hash { std::size_t operator()(const Key4& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; h = h * 1000003u ^ k.c; h = h * 1000003u ^ k.d; return h; } };
+    auto key4 = [](unsigned a, unsigned b, unsigned c, unsigned d) { unsigned v[4] = { a, b, c, d }; std::sort(v, v + 4); return Key4{ v[0], v[1], v[2], v[3] }; };
+    struct Key3 { unsigned a, b, c; bool operator==(const Key3& o) const { return a == o.a && b == o.b && c == o.c; } };
+    struct Key3Hash { std::size_t operator()(const Key3& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; h = h * 1000003u ^ k.c; return h; } };
+    auto key3 = [](unsigned a, unsigned b, unsigned c) { if (a > b) std::swap(a, b); if (b > c) std::swap(b, c); if (a > b) std::swap(a, b); return Key3{a, b, c}; };
+    struct Key2 { unsigned a, b; bool operator==(const Key2& o) const { return a == o.a && b == o.b; } };
+    struct Key2Hash { std::size_t operator()(const Key2& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; return h; } };
+    auto key2 = [](unsigned a, unsigned b) { if (a > b) std::swap(a, b); return Key2{a, b}; };
+
+    auto relax_min = [](auto& map, const auto& k, double a) {
+        auto it = map.find(k);
+        if (it == map.end()) map.emplace(k, a);
+        else it->second = std::min(it->second, a);
+    };
+
+    // dim 3 (tetrahedra): alpha = squared circumradius; stash on cell info for facets
+    std::unordered_map<Key4, double, Key4Hash> cell_alpha;
+    for (auto cit = pdt.cells_begin(); cit != pdt.cells_end(); ++cit) {
+        double a = sq(pdt.point(cit, 0), pdt.point(cit, 1), pdt.point(cit, 2), pdt.point(cit, 3));
+        cit->info() = a;
+        relax_min(cell_alpha, key4(cit->vertex(0)->info(), cit->vertex(1)->info(),
+                                   cit->vertex(2)->info(), cit->vertex(3)->info()), a);
+    }
+
+    // dim 2 (facets): Gabriel ? own circumradius : min over the two incident cells
+    // (periodic triangulations have no infinite cells)
+    std::unordered_map<Key3, double, Key3Hash> facet_alpha;
+    for (auto fit = pdt.facets_begin(); fit != pdt.facets_end(); ++fit) {
+        typename PDT::Facet f = *fit;
+        Cell_handle c = f.first;
+        int i = f.second;
+        double a;
+        if (pdt.is_Gabriel(f))
+            a = sq(pdt.point(c, (i + 1) & 3), pdt.point(c, (i + 2) & 3), pdt.point(c, (i + 3) & 3));
+        else
+            a = std::min(c->info(), c->neighbor(i)->info());
+        relax_min(facet_alpha, key3(c->vertex((i + 1) & 3)->info(), c->vertex((i + 2) & 3)->info(),
+                                    c->vertex((i + 3) & 3)->info()), a);
+    }
+
+    // dim 1 (edges): Gabriel ? own circumradius : min over incident facets
+    std::unordered_map<Key2, double, Key2Hash> edge_alpha;
+    for (auto eit = pdt.edges_begin(); eit != pdt.edges_end(); ++eit) {
+        typename PDT::Edge e = *eit;
+        Cell_handle c = e.first;
+        int i = e.second, j = e.third;
+        double a;
+        if (pdt.is_Gabriel(e)) {
+            a = sq(pdt.point(c, i), pdt.point(c, j));
+        } else {
+            double best = std::numeric_limits<double>::infinity();
+            typename PDT::Facet_circulator fc = pdt.incident_facets(e), fdone = fc;
+            do {
+                Cell_handle fcc = fc->first;
+                int fi = fc->second;
+                auto it = facet_alpha.find(key3(fcc->vertex((fi + 1) & 3)->info(),
+                                                fcc->vertex((fi + 2) & 3)->info(),
+                                                fcc->vertex((fi + 3) & 3)->info()));
+                if (it != facet_alpha.end()) best = std::min(best, it->second);
+            } while (++fc != fdone);
+            a = best;
+        }
+        relax_min(edge_alpha, key2(c->vertex(i)->info(), c->vertex(j)->info()), a);
+    }
+
+    for (const auto& kv : cell_alpha)
+        add_simplex(std::array<unsigned, 4>{ kv.first.a, kv.first.b, kv.first.c, kv.first.d }, kv.second);
+    for (const auto& kv : facet_alpha)
+        add_simplex(std::array<unsigned, 3>{ kv.first.a, kv.first.b, kv.first.c }, kv.second);
+    for (const auto& kv : edge_alpha)
+        add_simplex(std::array<unsigned, 2>{ kv.first.a, kv.first.b }, kv.second);
+
+    // dim 0 (vertices): alpha 0; one canonical vertex per input point
+    std::vector<char> seen_v(points.size(), 0);
+    for (auto vit = pdt.vertices_begin(); vit != pdt.vertices_end(); ++vit) {
+        unsigned idx = vit->info();
+        if (idx < seen_v.size() && !seen_v[idx]) { seen_v[idx] = 1; add_simplex(std::array<unsigned, 1>{ idx }, 0.0); }
+    }
+}
+
+template<bool exact>
 template<class Points>
 std::array<typename Points::Real, 3>
 diode::AlphaShapes<exact>::

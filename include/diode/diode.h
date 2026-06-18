@@ -78,6 +78,20 @@ struct AlphaShapes
     static void fill_periodic_alpha_shapes(const Points& points, const SimplexCallback& add_simplex,
                                     std::array<double, 3> from, std::array<double, 3> to);
 
+    // Faster equivalent of fill_periodic_alpha_shapes (3D unweighted): Edelsbrunner
+    // on a plain Periodic_3_Delaunay_triangulation_3 (input index in vertex info,
+    // squared circumradius cached in cell info) instead of constructing the full
+    // CGAL::Alpha_shape_3 spectrum. alpha = squared circumradius for Gabriel
+    // simplices (CGAL's periodic is_Gabriel, which handles offsets), else min over
+    // cofaces; geometry is offset-corrected via pdt.point(cell, i). Each canonical
+    // simplex is emitted once (deduplicated by vertex-index set, value min-reduced
+    // over offset copies). Produces the same simplex set as fill_periodic_alpha_shapes
+    // and -- up to the periodic Gabriel offset ambiguity on near-degenerate simplices
+    // -- the same values. Simplices emitted unsorted.
+    template<class Points, class SimplexCallback>
+    static void fill_periodic_alpha_shapes_direct(const Points& points, const SimplexCallback& add_simplex,
+                                    std::array<double, 3> from, std::array<double, 3> to);
+
     // Combinatorics-only export (3D, unweighted): builds the same plain
     // Delaunay_triangulation_3 as fill_alpha_shapes_direct (vertex index in vertex
     // info, O(1) lookup) and emits every finite simplex (cells, facets, edges,
