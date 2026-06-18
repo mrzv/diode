@@ -110,7 +110,7 @@ struct AlphaShapes
     // vertices) by vertex index, WITHOUT computing any alpha value. The simplex set
     // is exactly that of fill_alpha_shapes (the alpha complex is the full Delaunay
     // triangulation). Intended for consumers that recompute filtration values
-    // themselves (e.g. Oineus's differentiable Cech-Delaunay): all the per-simplex
+    // themselves (e.g. a differentiable Cech-Delaunay filtration): all the per-simplex
     // Gabriel/circumradius work is skipped. The callback is invoked as
     //     add_simplex(sigma_vertices)
     // with no value argument. Simplices are emitted unsorted.

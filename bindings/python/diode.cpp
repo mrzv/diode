@@ -5,14 +5,6 @@ namespace py = pybind11;
 
 #include <diode/diode.h>
 
-// Optional capsule path: build Oineus CellWithValue<Simplex> objects directly.
-// Enabled when the build is pointed at Oineus's headers (-DOINEUS_INCLUDE_DIR),
-// which defines DIODE_HAVE_OINEUS. The NumPy array path needs none of this.
-#ifdef DIODE_HAVE_OINEUS
-#include <oineus/simplex.h>
-#include <oineus/cell_with_value.h>
-#endif
-
 // present a numpy array in a way that diode understands
 template<class T>
 struct ArrayWrapper
@@ -83,14 +75,9 @@ void sort_filtration(Simplices& filtration)
 }
 
 // ===========================================================================
-// Exporters that hand an alpha filtration to Oineus without materializing one
-// Python object per simplex. Both run the fast Delaunay-direct traversal and
-// differ only in the per-simplex sink:
-//   * fill_alpha_shapes_arrays -- per-dimension NumPy arrays. Zero-copy,
-//       framework/library agnostic, needs no Oineus headers. Recommended.
-//   * fill_alpha_shapes_cells  -- a PyCapsule owning a std::vector of Oineus
-//       CellWithValue<Simplex>; only built when DIODE_HAVE_OINEUS is defined
-//       and requires a matching Int/Real/allocator ABI.
+// fill_alpha_shapes_arrays: hand the alpha filtration back as per-dimension NumPy
+// arrays without materializing one Python object per simplex. Runs the fast
+// Delaunay-direct traversal and buckets each simplex into flat, zero-copy buffers.
 // ===========================================================================
 
 // move a std::vector onto the heap and expose its buffer as a NumPy array with
@@ -190,8 +177,8 @@ void run_alpha_direct_traversal(py::array a, bool exact, const Cb& cb)
 }
 
 // Bucket simplices by dimension into flat row-major vertex buffers (d+1 ids per
-// simplex) + per-dimension value buffers. Oineus sorts by dimension first, so
-// this is exactly the grouping it wants. Vertex ids are int64 (Oineus's Int).
+// simplex) + per-dimension value buffers. Grouping by dimension up front suits
+// consumers that build a filtration dimension-by-dimension. Vertex ids are int64.
 struct AddSimplexArrays
 {
     using Verts = std::array<std::vector<long>, 4>;
@@ -211,7 +198,7 @@ struct AddSimplexArrays
 
 // returns (verts_by_dim, vals_by_dim): per-dimension NumPy arrays. verts_by_dim[d]
 // is (n_d, d+1) int64, vals_by_dim[d] is (n_d,) float64. Unsorted within a
-// dimension -- Oineus re-sorts by value.
+// dimension -- the consumer sorts by value.
 py::object
 fill_alpha_shapes_arrays(py::array a, bool exact)
 {
@@ -239,7 +226,7 @@ fill_alpha_shapes_arrays(py::array a, bool exact)
 // Combinatorics-only Delaunay exporters (no alpha values). Same shape as the
 // alpha exporters above but built on run_delaunay_traversal, which skips every
 // Gabriel/circumradius evaluation. Intended for consumers that recompute the
-// filtration values themselves (e.g. Oineus differentiable Cech-Delaunay).
+// filtration values themselves (e.g. a differentiable Cech-Delaunay filtration).
 // ===========================================================================
 
 // per-dimension flat vertex buffers (d+1 ids per simplex), no value buffers.
@@ -459,55 +446,6 @@ fill_weighted_periodic_delaunay(py::array a, bool exact, std::vector<double> fro
     AddSimplexNoVal::Simplices f;
     run_weighted_periodic_delaunay_traversal(a, exact, from_, to_, AddSimplexNoVal { &f });
     return py::cast(f);
-}
-#endif
-
-#ifdef DIODE_HAVE_OINEUS
-// MUST match Oineus's bindings: OINEUS_PYTHON_INT (long), OINEUS_PYTHON_REAL
-// (double). Oineus copies the cells out of the capsule, so allocator backends
-// need not match (capsule frees its own with the system allocator).
-using OinInt     = long;
-using OinReal    = double;
-using OinSimplex = oineus::Simplex<OinInt>;
-using OinCell    = oineus::CellWithValue<OinSimplex, OinReal>;
-using OinCellVec = std::vector<OinCell, oineus::JeAllocator<OinCell>>;
-
-static const char* k_oineus_capsule_name = "oineus_cellvector_simplex_long_double_v1";
-
-struct AddSimplexCells
-{
-    std::array<OinCellVec, 4>* buckets;
-
-    template<unsigned long D>
-    void operator()(const std::array<unsigned, D>& vertices, double a) const
-    {
-        typename OinSimplex::IdxVector vs;
-        vs.reserve(D);
-        for (unsigned v : vertices)
-            vs.push_back(static_cast<OinInt>(v));
-        (*buckets)[D - 1].emplace_back(OinSimplex(vs), static_cast<OinReal>(a));
-    }
-};
-
-// returns a PyCapsule owning a dimension-grouped std::vector<CellWithValue<...>>.
-py::object
-fill_alpha_shapes_cells(py::array a, bool exact)
-{
-    auto buckets = std::make_unique<std::array<OinCellVec, 4>>();
-    run_alpha_direct_traversal(a, exact, AddSimplexCells { buckets.get() });
-
-    auto* cells = new OinCellVec();
-    size_t total = 0;
-    for (auto& b : *buckets) total += b.size();
-    cells->reserve(total);
-    for (auto& b : *buckets)
-        for (auto& c : b)
-            cells->emplace_back(std::move(c));
-
-    return py::capsule(cells, k_oineus_capsule_name, [](PyObject* o) {
-        void* p = PyCapsule_GetPointer(o, "oineus_cellvector_simplex_long_double_v1");
-        delete reinterpret_cast<OinCellVec*>(p);
-    });
 }
 #endif
 
@@ -859,16 +797,6 @@ PYBIND11_MODULE(diode, m)
           "to"_a   = std::vector<double> {1.,1.,1.},
           "Periodic weighted Delaunay simplices as a flat list of vertex lists, WITHOUT\n"
           "alpha values. List form of fill_weighted_periodic_delaunay_arrays.");
-#endif
-#ifdef DIODE_HAVE_OINEUS
-    m.def("fill_alpha_shapes_cells", &fill_alpha_shapes_cells,
-          "data"_a, "exact"_a = false,
-          "Alpha shape filtration as a PyCapsule owning a\n"
-          "std::vector<oineus::CellWithValue<Simplex<long>, double>> (dimension-\n"
-          "grouped). Requires a diode built against Oineus headers.");
-    m.attr("has_oineus_cells") = true;
-#else
-    m.attr("has_oineus_cells") = false;
 #endif
     m.def("fill_weighted_alpha_shapes",  &fill_weighted_alpha_shape,
           "data"_a, "exact"_a = false, "with_attachment"_a = false,

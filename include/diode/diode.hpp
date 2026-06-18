@@ -2124,8 +2124,8 @@ fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_si
 // simplex set) with NO alpha values. The callback takes only the vertex array:
 //     add_simplex(std::array<unsigned, D>)
 // for D in {1,2,3,4}. These skip every Gabriel test / circumradius evaluation;
-// they exist for consumers that recompute filtration values themselves (e.g.
-// Oineus's differentiable Cech-Delaunay, which derives values as min-enclosing-
+// they exist for consumers that recompute filtration values themselves (e.g. a
+// differentiable Cech-Delaunay filtration, which derives values as min-enclosing-
 // ball radii from each simplex's own vertices).
 // ===========================================================================
 
