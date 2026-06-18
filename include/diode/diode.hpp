@@ -1487,9 +1487,9 @@ fill_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex)
 {
     using K             = detail::Kernel<exact>;
     using Delaunay2D    = CGAL::Delaunay_triangulation_2<K>;
-    using Vertex_handle = Delaunay2D::Vertex_handle;
-    using Point         = Delaunay2D::Point;
-    using Face_handle   = Delaunay2D::Face_handle;
+    using Vertex_handle = typename Delaunay2D::Vertex_handle;
+    using Point         = typename Delaunay2D::Point;
+    using Face_handle   = typename Delaunay2D::Face_handle;
 
     using ASPointMap    = std::unordered_map<Vertex_handle, unsigned>;
 
@@ -1531,7 +1531,7 @@ fill_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex)
         }
     };
 
-    auto simplex_from_face = [&](const Delaunay2D::Face& f)
+    auto simplex_from_face = [&](const typename Delaunay2D::Face& f)
     {
         Simplex2D s;
 
@@ -1656,9 +1656,9 @@ fill_alpha_shapes2d_with_attachment(const Points& points, const SimplexCallback&
 {
     using K             = detail::Kernel<exact>;
     using Delaunay2D    = CGAL::Delaunay_triangulation_2<K>;
-    using Vertex_handle = Delaunay2D::Vertex_handle;
-    using Point         = Delaunay2D::Point;
-    using Face_handle   = Delaunay2D::Face_handle;
+    using Vertex_handle = typename Delaunay2D::Vertex_handle;
+    using Point         = typename Delaunay2D::Point;
+    using Face_handle   = typename Delaunay2D::Face_handle;
 
     using ASPointMap    = std::unordered_map<Vertex_handle, unsigned>;
 
@@ -1704,7 +1704,7 @@ fill_alpha_shapes2d_with_attachment(const Points& points, const SimplexCallback&
         }
     };
 
-    auto simplex_from_face = [&](const Delaunay2D::Face& f)
+    auto simplex_from_face = [&](const typename Delaunay2D::Face& f)
     {
         Simplex2D s;
 
@@ -1945,10 +1945,10 @@ fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_si
     using K             = detail::Kernel<exact>;
     using GT            = CGAL::Periodic_2_Delaunay_triangulation_traits_2<K>;
     using PDelaunay2D   = CGAL::Periodic_2_Delaunay_triangulation_2<GT>;
-    using Vertex_handle = PDelaunay2D::Vertex_handle;
-    using Point         = PDelaunay2D::Point;
-    using Face_handle   = PDelaunay2D::Face_handle;
-    using Iso_rectangle = PDelaunay2D::Iso_rectangle;
+    using Vertex_handle = typename PDelaunay2D::Vertex_handle;
+    using Point         = typename PDelaunay2D::Point;
+    using Face_handle   = typename PDelaunay2D::Face_handle;
+    using Iso_rectangle = typename PDelaunay2D::Iso_rectangle;
 
     using ASPointMap    = std::unordered_map<Vertex_handle, unsigned>;
 
@@ -1999,7 +1999,7 @@ fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_si
         }
     };
 
-     auto simplex_from_face = [&](const PDelaunay2D::Face_handle f)
+     auto simplex_from_face = [&](const typename PDelaunay2D::Face_handle f)
      {
         Simplex2D s;
 

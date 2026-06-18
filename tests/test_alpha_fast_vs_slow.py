@@ -11,7 +11,6 @@ We check, over many random clouds (2D/3D, exact True/False):
   * for with_attachment, that the reported attacher tau is a valid Gabriel coface:
     squared_circumradius(tau) == alpha(sigma), for BOTH fast and slow.
 """
-from collections import Counter
 from itertools import combinations
 
 import numpy as np
@@ -223,7 +222,7 @@ def test_periodic_inverted_domain_raises():
 
 # ---- third-party (gudhi) oracle for cases where the _slow reference is itself
 # wrong: the fast paths are correct, so we pin them against gudhi, not _slow.
-# See SLOW_REFERENCE_BUGS.md.
+# Each test below notes the specific _slow bug it works around.
 def test_2d_hull_vertices_match_gudhi():
     gudhi = pytest.importorskip("gudhi")
     # 7 distinct points on a hull config where the _slow 2D path drops a vertex
