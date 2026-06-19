@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import diode
 
 def test_cube():
@@ -303,3 +304,33 @@ def test_with_attachment_not_implemented_for_periodic():
         return
     raise AssertionError("expected NotImplementedError for periodic with_attachment=True")
 
+
+def test_periodic_domain_requires_enough_bounds():
+    points = np.array([[0.1, 0.1, 0.1],
+                       [0.4, 0.1, 0.1],
+                       [0.1, 0.4, 0.1],
+                       [0.1, 0.1, 0.4]])
+
+    with pytest.raises(RuntimeError, match="from/to must have at least"):
+        diode.fill_periodic_alpha_shapes(points, False, [0.0], [1.0])
+
+    with pytest.raises(RuntimeError, match="from/to must have at least"):
+        diode.fill_periodic_alpha_shapes_arrays(points, False, [0.0], [1.0, 1.0, 1.0])
+
+    with pytest.raises(RuntimeError, match="from/to must have at least"):
+        diode.fill_periodic_delaunay(points, False, [0.0, 0.0, 0.0], [1.0])
+
+
+def test_periodic_domain_rejects_empty_or_inverted_axes():
+    points = np.array([[0.1, 0.1],
+                       [0.4, 0.1],
+                       [0.1, 0.4]])
+
+    with pytest.raises(RuntimeError, match="periodic domain is empty or inverted"):
+        diode.fill_periodic_alpha_shapes(points, False, [0.0, 1.0], [1.0, 1.0])
+
+    with pytest.raises(RuntimeError, match="periodic domain is empty or inverted"):
+        diode.fill_periodic_alpha_shapes_arrays(points, False, [0.0, 1.0], [1.0, 0.0])
+
+    with pytest.raises(RuntimeError, match="periodic domain is empty or inverted"):
+        diode.fill_periodic_delaunay_arrays(points, False, [0.0, 1.0], [1.0, 0.0])
