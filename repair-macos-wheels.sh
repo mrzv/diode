@@ -4,15 +4,15 @@ shopt -s nullglob
 
 DIODE_VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
 
-WHEELS=(dist/diode-$DIODE_VERSION-*-linux*.whl)
+WHEELS=(dist/diode-$DIODE_VERSION-*-macosx*.whl)
 if (( ${#WHEELS[@]} == 0 )); then
-  echo "No Linux wheels found for diode $DIODE_VERSION" >&2
+  echo "No macOS wheels found for diode $DIODE_VERSION" >&2
   exit 1
 fi
 
-REPAIRED_DIR=$(mktemp -d "${TMPDIR:-/tmp}/diode-auditwheel.XXXXXX")
+REPAIRED_DIR=$(mktemp -d "${TMPDIR:-/tmp}/diode-delocate.XXXXXX")
 trap 'rm -rf "$REPAIRED_DIR"' EXIT
-UNREPAIRED_DIR=dist/unrepaired-linux
+UNREPAIRED_DIR=dist/unrepaired-macos
 mkdir -p "$UNREPAIRED_DIR"
 
 RAW_WHEELS=()
@@ -23,12 +23,12 @@ for fn in "${WHEELS[@]}"; do
 done
 
 for fn in "${RAW_WHEELS[@]}"; do
-  uvx auditwheel repair --plat manylinux_2_39_x86_64 --wheel-dir "$REPAIRED_DIR" "$fn"
+  uvx --from delocate delocate-wheel --wheel-dir "$REPAIRED_DIR" "$fn"
 done
 
 REPAIRED_WHEELS=("$REPAIRED_DIR"/*.whl)
 if (( ${#REPAIRED_WHEELS[@]} == 0 )); then
-  echo "auditwheel did not produce any repaired wheels" >&2
+  echo "delocate did not produce any repaired wheels" >&2
   exit 1
 fi
 
