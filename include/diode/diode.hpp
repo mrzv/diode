@@ -1890,34 +1890,44 @@ fill_periodic_alpha_shapes2d_direct(const Points& points, const SimplexCallback&
         add_simplex(std::array<unsigned, 3>{ kv.first.a, kv.first.b, kv.first.c }, kv.second);
 
     // edges: non-attached -> own circumradius; attached -> min over the two
-    // incident faces (periodic triangulations have no infinite faces).
+    // incident faces (periodic triangulations have no infinite faces). The
+    // Gabriel/attached test is done in each incident face's OWN periodic frame:
+    // the edge endpoints and the apex both come from pdt.triangle(<that face>), so
+    // all three points carry the same offsets. (Mixing offset-corrected endpoints
+    // with an un-offset apex -- vertex(i)->point() -- misclassifies edges whose
+    // incident faces wrap the periodic boundary.)
     std::unordered_map<Key2, double, Key2Hash> edge_value;
     for (auto cur = pdt.finite_edges_begin(); cur != pdt.finite_edges_end(); ++cur) {
         auto e = *cur;
         Face_handle f = e.first;
         int ei = e.second;
-        auto t = pdt.triangle(f);
+        Face_handle o = f->neighbor(ei);
+        auto tf = pdt.triangle(f);
         Point ep[2];
         unsigned idx[2];
         int j = 0;
         for (int i = 0; i < 3; ++i)
-            if (i != ei) { ep[j] = t.vertex(i); idx[j] = point_map[f->vertex(i)]; ++j; }
-        const Point& p1 = ep[0];
-        const Point& p2 = ep[1];
+            if (i != ei) { ep[j] = tf.vertex(i); idx[j] = point_map[f->vertex(i)]; ++j; }
 
-        Face_handle o = f->neighbor(ei);
-        bool attached = false;
-        if (CGAL::side_of_bounded_circle(p1, p2, f->vertex(ei)->point()) == CGAL::ON_BOUNDED_SIDE) {
-            attached = true;
-        } else {
+        // f-side: apex tf.vertex(ei) shares the frame of the endpoints ep[].
+        bool attached =
+            CGAL::side_of_bounded_circle(ep[0], ep[1], tf.vertex(ei)) == CGAL::ON_BOUNDED_SIDE;
+        if (!attached) {
+            // o-side: redo the whole test in o's own frame (endpoints + apex from
+            // pdt.triangle(o)); the in-circle predicate is translation-invariant, so
+            // testing each apex against the edge as positioned in its own face is correct.
             int oi = o->index(f);
-            if (CGAL::side_of_bounded_circle(p1, p2, o->vertex(oi)->point()) == CGAL::ON_BOUNDED_SIDE)
-                attached = true;
+            auto to = pdt.triangle(o);
+            Point oq[2];
+            int k = 0;
+            for (int i = 0; i < 3; ++i)
+                if (i != oi) oq[k++] = to.vertex(i);
+            attached =
+                CGAL::side_of_bounded_circle(oq[0], oq[1], to.vertex(oi)) == CGAL::ON_BOUNDED_SIDE;
         }
 
-        double v;
-        if (!attached) v = sq(p1, p2);
-        else           v = std::min(face_value.at(face_key(f)), face_value.at(face_key(o)));
+        double v = attached ? std::min(face_value.at(face_key(f)), face_value.at(face_key(o)))
+                            : sq(ep[0], ep[1]);
         edge_value.emplace(key2(idx[0], idx[1]), v);
     }
     for (const auto& kv : edge_value)
@@ -2057,17 +2067,26 @@ fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_si
         {
             int oi = o->index(f);
 
+            // frame-consistent Gabriel test: test each apex against the shared edge in
+            // its OWN incident face's periodic frame -- f's apex against the edge from
+            // pdt.triangle(f), o's apex against the edge from pdt.triangle(o) -- instead
+            // of testing un-offset apex points against the offset-corrected endpoints
+            // (see fill_periodic_alpha_shapes2d_direct for the offset-frame rationale).
             bool attached = false;
             if (!pdt.is_infinite(f->vertex(e.second)) &&
-                CGAL::side_of_bounded_circle(p1, p2,
-                                             f->vertex(e.second)->point()) == CGAL::ON_BOUNDED_SIDE)
-                attached = true;
-            else if (!pdt.is_infinite(o->vertex(oi)) &&
-                     CGAL::side_of_bounded_circle(p1, p2,
-                                                  o->vertex(oi)->point()) == CGAL::ON_BOUNDED_SIDE)
+                CGAL::side_of_bounded_circle(p1, p2, t.vertex(e.second)) == CGAL::ON_BOUNDED_SIDE)
                 attached = true;
             else
-                s.value = detail::to_floating_point(CGAL::squared_radius(p1, p2));
+            {
+                auto to = pdt.triangle(o);
+                Point oq[2]; int k = 0;
+                for (int i = 0; i < 3; ++i) if (i != oi) oq[k++] = to.vertex(i);
+                if (!pdt.is_infinite(o->vertex(oi)) &&
+                    CGAL::side_of_bounded_circle(oq[0], oq[1], to.vertex(oi)) == CGAL::ON_BOUNDED_SIDE)
+                    attached = true;
+                else
+                    s.value = detail::to_floating_point(CGAL::squared_radius(p1, p2));
+            }
 
             if (attached)
             {

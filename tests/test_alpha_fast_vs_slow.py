@@ -335,16 +335,14 @@ def test_weighted_periodic_3d_is_valid_complex(n, exact):
     # the set-match-vs-slow test above pins the topology at non-degenerate n.
 
 
-# ---- periodic 2D: fast (Delaunay-direct) vs slow (tiling) -------------------
-# 2D periodic alpha is resolved differently by the two paths (periodic offsets vs
-# a finite tiling), and CGAL picks an arbitrary periodic *offset representative*,
-# so for a few near-degenerate edges the alpha value differs by an unbounded amount
-# AND varies run-to-run -- this is the documented, deliberately-unfixed 2D periodic
-# ambiguity (CGAL's Periodic_2_Delaunay has no is_Gabriel to resolve it cleanly,
-# unlike the 3D periodic case). The combinatorics are deterministic, so we pin the
-# simplex set exactly and require all but a tiny fraction of values to agree; the
-# persistence diagram (what actually matters) is checked under bottleneck distance
-# in test_periodic_2d_fast_vs_slow_diagram.
+# ---- periodic 2D: fast (Delaunay-direct) vs slow reference ------------------
+# CGAL's Periodic_2_Delaunay_triangulation_2 has no is_Gabriel, so both 2D periodic
+# paths do a manual Gabriel test -- now made frame-consistent: each incident face's
+# apex is tested against the edge in that face's OWN periodic frame (via
+# pdt.triangle(face)). With that, both paths produce the same correct periodic alpha
+# values (a brute-force tiling confirms it, test_periodic_2d_matches_tiling), so they
+# agree to round-off. (Previously the apex was read un-offset against offset-corrected
+# endpoints, which gave wrong, run-to-run-varying values on boundary-wrapping edges.)
 @pytest.mark.parametrize("n", [20, 100, 500, 1500])
 @pytest.mark.parametrize("exact", EXACTS)
 def test_periodic_2d_fast_vs_slow_values(n, exact):
@@ -354,13 +352,56 @@ def test_periodic_2d_fast_vs_slow_values(n, exact):
     slow = to_value_dict(diode.fill_periodic_alpha_shapes_slow(pts, exact, [0., 0.], [1., 1.]))
     assert set(fast) == set(slow), "periodic simplex sets differ"
     diffs = np.array([abs(fast[k] - slow[k]) for k in fast])
-    # The vast majority of edges agree exactly; only a few near-degenerate ones
-    # differ (by a possibly large, run-dependent amount -- so we bound the COUNT,
-    # not the magnitude, and rely on the diagram test for value correctness).
-    assert np.median(diffs) < 1e-9, "most periodic values should match exactly"
-    n_differ = int((diffs > 1e-7).sum())
-    assert n_differ <= max(5, len(diffs) // 50), \
-        f"{n_differ}/{len(diffs)} periodic values differ -- more than offset ambiguity explains"
+    assert diffs.max(initial=0.0) < 1e-7, \
+        f"fast/slow 2D periodic values differ by {diffs.max(initial=0.0):.2e}"
+
+
+def _periodic_2d_tiling_edge_values(pts, gudhi, half=2, L=1.0):
+    """Ground-truth periodic 2D alpha EDGE values: the periodic alpha complex equals
+    the ordinary alpha complex of an infinite tiling, so we tile into (2*half+1)^2
+    copies, run a non-periodic EXACT alpha, and keep edges anchored at a central-cell
+    vertex -- those sit deep inside the tiling, so their Edelsbrunner values are the
+    true periodic ones. Returns {sorted (a, b): squared circumradius}."""
+    n = len(pts)
+    P, canon, central = [], [], []
+    for dy in range(-half, half + 1):
+        for dx in range(-half, half + 1):
+            for k in range(n):
+                P.append((pts[k, 0] + dx * L, pts[k, 1] + dy * L))
+                canon.append(k)
+                central.append(dx == 0 and dy == 0)
+    st = gudhi.AlphaComplex(points=P, precision="exact").create_simplex_tree()
+    edge = {}
+    for s, val in st.get_simplices():
+        if len(s) != 2:
+            continue
+        u, v = s
+        if not (central[u] or central[v]):
+            continue
+        a, b = canon[u], canon[v]
+        if a == b:
+            continue
+        key = (min(a, b), max(a, b))
+        edge[key] = min(edge.get(key, float("inf")), float(val))
+    return edge
+
+
+@pytest.mark.parametrize("n", [50, 200])
+@pytest.mark.parametrize("exact", EXACTS)
+def test_periodic_2d_matches_tiling(n, exact):
+    # The strong correctness pin: the direct path's 2D periodic edge values must equal
+    # the brute-force tiling ground truth. The frame-mixed Gabriel test this replaced
+    # was wrong on a handful of boundary-wrapping edges per cloud and would fail here.
+    gudhi = pytest.importorskip("gudhi")
+    rng = np.random.default_rng(5000 * n + int(exact))
+    pts = rng.random((n, 2))
+    fast = to_value_dict(diode.fill_periodic_alpha_shapes(pts, exact, [0., 0.], [1., 1.]))
+    truth = _periodic_2d_tiling_edge_values(pts, gudhi)
+    checked = [k for k in fast if len(k) == 2 and k in truth]
+    assert len(checked) > n, f"tiling resolved too few edges ({len(checked)})"
+    bad = [(k, fast[k], truth[k]) for k in checked
+           if not np.isclose(fast[k], truth[k], rtol=1e-6, atol=1e-9)]
+    assert not bad, f"{len(bad)} edge(s) differ from the tiling truth, e.g. {bad[:3]}"
 
 
 def _gudhi_diagram(filtration, dim, gudhi):
