@@ -876,7 +876,16 @@ PYBIND11_MODULE(diode, m)
           "such that the squared circumradius of tau equals alpha. For Gabriel\n"
           "sigma, tau == sigma. The triple form is intended for differentiable\n"
           "alpha-filtration pipelines where alpha values must be expressed as\n"
-          "smooth functions of point coordinates.");
+          "smooth functions of point coordinates.\n"
+          "\n"
+          "Degenerate input and exact: with exact=False (default) the kernel uses\n"
+          "exact predicates but INEXACT constructions, so on degenerate, full-\n"
+          "dimensional clouds (e.g. many points on a common sphere/circle, as in\n"
+          "regular grids on a sphere or torus) the alpha values -- and even the\n"
+          "simplex set, where the Delaunay triangulation is genuinely non-unique --\n"
+          "are not reliable and can differ from fill_alpha_shapes_slow (or any other\n"
+          "implementation). This is inherent to inexact constructions, not specific\n"
+          "to this path. Use exact=True for guaranteed correct results on such input.");
     m.def("fill_alpha_shapes_slow",  &fill_alpha_shape_slow,
           "data"_a, "exact"_a = false, "with_attachment"_a = false,
           "Reference implementation of fill_alpha_shapes kept for testing: 3D uses\n"
