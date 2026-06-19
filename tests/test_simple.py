@@ -24,8 +24,11 @@ def test_cube():
                   ([2, 1, 3], 0.75),
                   ([2, 1, 0, 3], 0.75)]
 
-    for s1,s2 in zip(sorted(f), sorted(expected_f)):
-        assert(s1 == s2)
+    # Compare canonically: vertex order within a simplex is not a contract
+    # (the fast Delaunay-direct path emits a different per-simplex vertex order
+    # than the old Alpha_shape_3 path; consumers sort vertices anyway).
+    canon = lambda g: sorted((tuple(sorted(v)), val) for v, val in g)
+    assert canon(f) == canon(expected_f)
 
 def test_square():
     points = np.array([[0.,0.],[1.,0.],[0.,1.]])
@@ -39,8 +42,8 @@ def test_square():
                   ([1, 2], 0.5),
                   ([0, 1, 2], 0.5)]
 
-    for s1,s2 in zip(sorted(f), sorted(expected_f)):
-        assert(s1 == s2)
+    canon = lambda g: sorted((tuple(sorted(v)), val) for v, val in g)
+    assert canon(f) == canon(expected_f)
 
 def is_sorted(lst, key = lambda x: x):
     return all(key(lst[i]) <= key(lst[i+1]) for i in range(len(lst) - 1))

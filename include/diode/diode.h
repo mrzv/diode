@@ -8,12 +8,16 @@
 
 #include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
 #include <CGAL/Delaunay_triangulation_3.h>
+#include <CGAL/Triangulation_vertex_base_with_info_3.h>
+#include <CGAL/Triangulation_cell_base_with_info_3.h>
 #include <CGAL/Regular_triangulation_3.h>
 #include <CGAL/Periodic_3_Delaunay_triangulation_traits_3.h>
 #include <CGAL/Periodic_3_Delaunay_triangulation_3.h>
 #include <CGAL/Alpha_shape_3.h>
 
 #include <CGAL/Delaunay_triangulation_2.h>
+#include <CGAL/Triangulation_vertex_base_with_info_2.h>
+#include <CGAL/Triangulation_face_base_with_info_2.h>
 
 #include <CGAL/Periodic_2_Delaunay_triangulation_2.h>
 #include <CGAL/Periodic_2_Delaunay_triangulation_traits_2.h>
@@ -47,14 +51,97 @@ struct AlphaShapes
     template<class Points, class SimplexCallback>
     static void fill_alpha_shapes(const Points& points, const SimplexCallback& add_simplex);
 
+    // Faster equivalent of fill_alpha_shapes for 3D unweighted alpha shapes: builds
+    // a plain Delaunay_triangulation_3 (vertex index stored in vertex info, O(1)
+    // lookup) and assigns alpha = squared circumradius directly via Edelsbrunner's
+    // algorithm (is_Gabriel + min-over-cofaces), instead of constructing the full
+    // CGAL::Alpha_shape_3 spectrum. Produces the same (simplex, alpha) set. Simplices
+    // are emitted unsorted; the caller sorts if a filtration order is needed.
+    template<class Points, class SimplexCallback>
+    static void fill_alpha_shapes_direct(const Points& points, const SimplexCallback& add_simplex);
+
     template<class Points, class SimplexCallback>
     static void fill_alpha_shapes_with_attachment(const Points& points, const SimplexCallback& add_simplex);
+
+    // Faster equivalent of fill_alpha_shapes_with_attachment (3D unweighted), built
+    // on the Delaunay-direct path. Emits the same attacher tau: a Gabriel coface
+    // whose own squared circumradius equals alpha. Computed as a byproduct of the
+    // Edelsbrunner propagation (Gabriel sigma -> tau = sigma; non-Gabriel -> the
+    // determining coface). Simplices emitted unsorted.
+    template<class Points, class SimplexCallback>
+    static void fill_alpha_shapes_direct_with_attachment(const Points& points, const SimplexCallback& add_simplex);
 
     template<class Points, class SimplexCallback>
     static void fill_weighted_alpha_shapes(const Points& points, const SimplexCallback& add_simplex);
 
+    // Faster equivalent of fill_weighted_alpha_shapes (3D weighted): weighted
+    // Edelsbrunner on a plain Regular_triangulation_3 (input index in vertex info,
+    // weighted squared radius cached in cell info) instead of CGAL::Alpha_shape_3.
+    // alpha = squared radius of the smallest orthogonal sphere through a simplex's
+    // weighted vertices (vertices: -weight) for Gabriel simplices (CGAL's
+    // Regular_triangulation_3::is_Gabriel), else min over cofaces. Hidden (redundant)
+    // weighted points are omitted, like the slow path. Input is a 4-column array
+    // (x, y, z, weight). Produces the same (simplex, alpha) set as
+    // fill_weighted_alpha_shapes. Simplices emitted unsorted.
+    template<class Points, class SimplexCallback>
+    static void fill_weighted_alpha_shapes_direct(const Points& points, const SimplexCallback& add_simplex);
+
     template<class Points, class SimplexCallback>
     static void fill_periodic_alpha_shapes(const Points& points, const SimplexCallback& add_simplex,
+                                    std::array<double, 3> from, std::array<double, 3> to);
+
+    // Faster equivalent of fill_periodic_alpha_shapes (3D unweighted): Edelsbrunner
+    // on a plain Periodic_3_Delaunay_triangulation_3 (input index in vertex info,
+    // squared circumradius cached in cell info) instead of constructing the full
+    // CGAL::Alpha_shape_3 spectrum. alpha = squared circumradius for Gabriel
+    // simplices (CGAL's periodic is_Gabriel, which handles offsets), else min over
+    // cofaces; geometry is offset-corrected via pdt.point(cell, i). Each canonical
+    // simplex is emitted once (deduplicated by vertex-index set, value min-reduced
+    // over offset copies). Produces the same simplex set as fill_periodic_alpha_shapes
+    // and -- up to the periodic Gabriel offset ambiguity on near-degenerate simplices
+    // -- the same values. Simplices emitted unsorted.
+    template<class Points, class SimplexCallback>
+    static void fill_periodic_alpha_shapes_direct(const Points& points, const SimplexCallback& add_simplex,
+                                    std::array<double, 3> from, std::array<double, 3> to);
+
+    // Combinatorics-only export (3D, unweighted): builds the same plain
+    // Delaunay_triangulation_3 as fill_alpha_shapes_direct (vertex index in vertex
+    // info, O(1) lookup) and emits every finite simplex (cells, facets, edges,
+    // vertices) by vertex index, WITHOUT computing any alpha value. For full-
+    // dimensional input the simplex set equals that of fill_alpha_shapes (the alpha
+    // complex is the full Delaunay triangulation). NB: for degenerate (collinear/
+    // coplanar) 3D input this emits the actual lower-dimensional Delaunay complex,
+    // whereas fill_alpha_shapes returns nothing (CGAL::Alpha_shape_3 requires a
+    // full-dimensional triangulation). Intended for consumers that recompute filtration
+    // values themselves (e.g. a differentiable Cech-Delaunay filtration): all the
+    // per-simplex Gabriel/circumradius work is skipped. The callback is invoked as
+    //     add_simplex(sigma_vertices)
+    // with no value argument. Simplices are emitted unsorted.
+    template<class Points, class SimplexCallback>
+    static void fill_delaunay(const Points& points, const SimplexCallback& add_simplex);
+
+    // Combinatorics-only export (3D, weighted): the Regular_triangulation_3 simplices
+    // (== the weighted alpha-complex simplex set) by vertex index, WITHOUT any alpha
+    // value. Input is a 4-column array (x, y, z, weight). Redundant (hidden) weighted
+    // points are absent, like fill_weighted_alpha_shapes. Callback: add_simplex(vertices).
+    template<class Points, class SimplexCallback>
+    static void fill_weighted_delaunay(const Points& points, const SimplexCallback& add_simplex);
+
+    // Combinatorics-only export (3D, weighted, periodic): like fill_weighted_delaunay
+    // but on a Periodic_3_regular_triangulation_3 over [from, to]. Each canonical
+    // simplex is emitted once (deduplicated by vertex-index set); degenerate vertices
+    // at the 1-sheet boundary are dropped so the output stays a valid complex.
+    // No alpha values. Callback: add_simplex(vertices).
+    template<class Points, class SimplexCallback>
+    static void fill_weighted_periodic_delaunay(const Points& points, const SimplexCallback& add_simplex,
+                                    std::array<double, 3> from, std::array<double, 3> to);
+
+    // Combinatorics-only export (3D, unweighted, periodic): like fill_delaunay but
+    // on a Periodic_3_Delaunay_triangulation_3 over the cuboid [from, to]. Each
+    // canonical simplex is emitted once (deduplicated by vertex-index set, matching
+    // the periodic alpha paths). No alpha values. Callback: add_simplex(vertices).
+    template<class Points, class SimplexCallback>
+    static void fill_periodic_delaunay(const Points& points, const SimplexCallback& add_simplex,
                                     std::array<double, 3> from, std::array<double, 3> to);
 
 
@@ -62,20 +149,73 @@ struct AlphaShapes
     template<class Points, class SimplexCallback>
     static void fill_weighted_periodic_alpha_shapes(const Points& points, const SimplexCallback& add_simplex,
                                                     std::array<double, 3> from, std::array<double, 3> to);
+
+    // Faster equivalent of fill_weighted_periodic_alpha_shapes (3D weighted periodic):
+    // weighted Edelsbrunner on a plain Periodic_3_regular_triangulation_3 (index in
+    // vertex info, weighted squared radius in cell info, offset-corrected geometry via
+    // pdt.point(cell,i)) instead of CGAL::Alpha_shape_3. Gabriel uses the periodic
+    // regular triangulation's is_Gabriel(Facet/Edge/Vertex). Each canonical simplex is
+    // emitted once (deduped by vertex-index set, value min-reduced over offsets). For
+    // non-degenerate clouds the simplex set matches fill_weighted_periodic_alpha_shapes
+    // and values agree up to the periodic Gabriel offset ambiguity; near the sparse
+    // 1-sheet boundary the two can differ (this path always emits a valid, dedup'd
+    // complex, where the slow path may emit index-duplicated simplices). Emitted unsorted.
+    template<class Points, class SimplexCallback>
+    static void fill_weighted_periodic_alpha_shapes_direct(const Points& points, const SimplexCallback& add_simplex,
+                                                    std::array<double, 3> from, std::array<double, 3> to);
 #endif
 
     template<class Points>
     static std::array<typename Points::Real, 3> circumcenter(const Points& points);
 };
 
-template<class Points, class SimplexCallback>
+// 2D alpha shapes select the kernel from `exact`, like the 3D AlphaShapes<exact>
+// methods: exact=true uses CGAL's exact-construction kernel (EPECK), exact=false
+// the inexact-construction kernel (EPICK; exact predicates, fast double values).
+template<bool exact, class Points, class SimplexCallback>
 void fill_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex);
 
-template<class Points, class SimplexCallback>
+// Faster equivalent of fill_alpha_shapes2d: Delaunay_triangulation_2 with the
+// input index in vertex info (O(1) lookup) and the face circumradius cached in
+// face info, instead of a std::set<Simplex2D> with per-edge recomputation.
+// Produces the same (simplex, alpha) set. Simplices are emitted unsorted.
+template<bool exact, class Points, class SimplexCallback>
+void fill_alpha_shapes2d_direct(const Points& points, const SimplexCallback& add_simplex);
+
+template<bool exact, class Points, class SimplexCallback>
 void fill_alpha_shapes2d_with_attachment(const Points& points, const SimplexCallback& add_simplex);
 
-template<class Points, class SimplexCallback>
+// Faster equivalent of fill_alpha_shapes2d_with_attachment, built on the 2D
+// Delaunay-direct path. Same attacher contract. Simplices emitted unsorted.
+template<bool exact, class Points, class SimplexCallback>
+void fill_alpha_shapes2d_direct_with_attachment(const Points& points, const SimplexCallback& add_simplex);
+
+template<bool exact, class Points, class SimplexCallback>
 void fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex,
+                                std::array<double, 2> from, std::array<double, 2> to);
+
+// Faster equivalent of fill_periodic_alpha_shapes2d: same periodic geometry and
+// Gabriel test, but caches face circumradii in a hash map keyed by vertex set
+// (first-wins, matching the std::set dedup) instead of a std::set with per-edge
+// recomputation. Produces the same (simplex, alpha) set. Emitted unsorted.
+template<bool exact, class Points, class SimplexCallback>
+void fill_periodic_alpha_shapes2d_direct(const Points& points, const SimplexCallback& add_simplex,
+                                std::array<double, 2> from, std::array<double, 2> to);
+
+// Combinatorics-only export (2D, unweighted): builds the same
+// Delaunay_triangulation_2 as fill_alpha_shapes2d_direct (vertex index in vertex
+// info) and emits every finite simplex (faces, edges, vertices) by vertex index,
+// WITHOUT computing any alpha value. Same simplex set as fill_alpha_shapes2d.
+// Callback: add_simplex(vertices). Simplices emitted unsorted.
+template<bool exact, class Points, class SimplexCallback>
+void fill_delaunay2d(const Points& points, const SimplexCallback& add_simplex);
+
+// Combinatorics-only export (2D, unweighted, periodic): like fill_delaunay2d but
+// on a Periodic_2_Delaunay_triangulation_2 over [from, to]. Each canonical simplex
+// is emitted once (deduplicated by vertex-index set). No alpha values.
+// Callback: add_simplex(vertices).
+template<bool exact, class Points, class SimplexCallback>
+void fill_periodic_delaunay2d(const Points& points, const SimplexCallback& add_simplex,
                                 std::array<double, 2> from, std::array<double, 2> to);
 
 
