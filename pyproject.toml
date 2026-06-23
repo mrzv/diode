@@ -41,5 +41,6 @@ cache-keys = [{ file = "pyproject.toml" },
 [dependency-groups]
 test = [
     "numpy>=2",
-    "pytest>=8.4.2",
+    # pytest 9.0.3 fixes GHSA-6w46-j5rx-g56g but requires Python >= 3.10.
+    "pytest>=9.0.3; python_version >= '3.10'",
 ]
