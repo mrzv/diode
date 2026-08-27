@@ -11,6 +11,70 @@ namespace diode
 namespace detail
 {
 
+template<std::size_t N>
+struct UnsignedArrayHash
+{
+    // Hash fixed-size simplex vertex tuples for the periodic-lift lookup tables.
+    std::size_t operator()(const std::array<unsigned, N>& values) const
+    {
+        std::size_t hash = 0;
+        for (unsigned value : values)
+            hash = hash * 1000003u ^ value;
+        return hash;
+    }
+};
+
+template<std::size_t N, std::size_t AmbientDim, class SimplexCallback>
+void emit_periodic_lift(
+        std::array<unsigned, N> vertices,
+        std::array<std::array<int, AmbientDim>, N> offsets,
+        std::unordered_map<std::array<unsigned, N>,
+                           std::array<std::array<int, AmbientDim>, N>,
+                           UnsignedArrayHash<N>>& seen,
+        const SimplexCallback& add_simplex)
+{
+    // Canonicalize CGAL's offset-dependent simplex occurrence, retaining its
+    // relative lattice placement and rejecting incompatible duplicate lifts.
+    // A preceding one-sheet conversion makes each canonical simplex unique;
+    // `seen` is therefore an invariant check, not a duplicate-removal pass.
+    // Repeated tuples with matching offsets also fail that uniqueness invariant.
+    std::array<std::size_t, N> order;
+    for (std::size_t i = 0; i < N; ++i)
+        order[i] = i;
+    std::sort(order.begin(), order.end(),
+              [&](std::size_t i, std::size_t j) { return vertices[i] < vertices[j]; });
+
+    std::array<unsigned, N> sorted_vertices;
+    std::array<std::array<int, AmbientDim>, N> sorted_offsets;
+    for (std::size_t i = 0; i < N; ++i) {
+        sorted_vertices[i] = vertices[order[i]];
+        sorted_offsets[i] = offsets[order[i]];
+    }
+
+    const auto base_offset = sorted_offsets[0];
+    for (auto& offset : sorted_offsets)
+        for (std::size_t axis = 0; axis < AmbientDim; ++axis)
+            offset[axis] -= base_offset[axis];
+
+    auto result = seen.emplace(sorted_vertices, sorted_offsets);
+    if (!result.second) {
+        std::ostringstream message;
+        message << "Periodic one-sheet traversal emitted vertex tuple (";
+        for (std::size_t i = 0; i < N; ++i) {
+            if (i)
+                message << ", ";
+            message << sorted_vertices[i];
+        }
+        if (result.first->second == sorted_offsets)
+            message << ") more than once";
+        else
+            message << ") with different relative lattice offsets; vertex-id simplex identity cannot represent both lifts";
+        throw std::runtime_error(message.str());
+    }
+
+    add_simplex(sorted_vertices, sorted_offsets);
+}
+
 template<class NT>
 double to_floating_point(const NT& x, typename std::enable_if< !std::is_floating_point<NT>::value >::type* = 0)
 { return CGAL::to_double(x.exact()); }
@@ -2328,6 +2392,90 @@ fill_periodic_delaunay2d(const Points& points, const SimplexCallback& add_simple
     }
 }
 
+template<bool exact, class Points, class SimplexCallback>
+void
+diode::
+fill_periodic_delaunay2d_lifts(const Points& points, const SimplexCallback& add_simplex,
+                               std::array<double, 2> from, std::array<double, 2> to)
+{
+    using K             = detail::Kernel<exact>;
+    using GT            = CGAL::Periodic_2_Delaunay_triangulation_traits_2<K>;
+    using PDelaunay2D   = CGAL::Periodic_2_Delaunay_triangulation_2<GT>;
+    using Vertex_handle = typename PDelaunay2D::Vertex_handle;
+    using Point         = typename PDelaunay2D::Point;
+    using Face_handle   = typename PDelaunay2D::Face_handle;
+    using Iso_rectangle = typename PDelaunay2D::Iso_rectangle;
+    using ASPointMap    = std::unordered_map<Vertex_handle, unsigned>;
+
+    Iso_rectangle domain(from[0], from[1], to[0], to[1]);
+    PDelaunay2D pdt(domain);
+    ASPointMap point_map;
+    for (unsigned i = 0; i < points.size(); ++i)
+        point_map[pdt.insert(Point(points(i, 0), points(i, 1)))] = i;
+
+    // CGAL reports periodic offsets only after this conversion to a finite
+    // fundamental-domain traversal. is_triangulation_in_1_sheet() certifies
+    // that the same periodic complex is valid in one sheet; conversion removes
+    // CGAL's 9-sheet replicas, so the iterators below yield one representative
+    // of each simplex without application-level deduplication.
+    if (pdt.is_triangulation_in_1_sheet())
+        pdt.convert_to_1_sheeted_covering();
+    else
+        throw std::runtime_error("Cannot convert to 1-sheeted covering");
+
+    auto vertex_id = [&](Vertex_handle vertex) {
+        auto it = point_map.find(vertex);
+        if (it == point_map.end())
+            throw std::runtime_error("Periodic vertex lost its input index during one-sheet conversion");
+        return it->second;
+    };
+
+    using Offsets1 = std::array<std::array<int, 2>, 1>;
+    using Offsets2 = std::array<std::array<int, 2>, 2>;
+    using Offsets3 = std::array<std::array<int, 2>, 3>;
+    std::unordered_map<std::array<unsigned, 1>, Offsets1, detail::UnsignedArrayHash<1>> seen_vertices;
+    std::unordered_map<std::array<unsigned, 2>, Offsets2, detail::UnsignedArrayHash<2>> seen_edges;
+    std::unordered_map<std::array<unsigned, 3>, Offsets3, detail::UnsignedArrayHash<3>> seen_faces;
+
+    for (auto fit = pdt.finite_faces_begin(); fit != pdt.finite_faces_end(); ++fit) {
+        std::array<unsigned, 3> vertices;
+        Offsets3 offsets;
+        for (int i = 0; i < 3; ++i) {
+            vertices[i] = vertex_id(fit->vertex(i));
+            auto periodic_point = pdt.periodic_point(fit, i);
+            offsets[i] = { periodic_point.second[0], periodic_point.second[1] };
+        }
+        detail::emit_periodic_lift(vertices, offsets, seen_faces, add_simplex);
+    }
+
+    for (auto eit = pdt.finite_edges_begin(); eit != pdt.finite_edges_end(); ++eit) {
+        Face_handle face = eit->first;
+        int opposite = eit->second;
+        std::array<unsigned, 2> vertices;
+        Offsets2 offsets;
+        int j = 0;
+        for (int i = 0; i < 3; ++i) {
+            if (i == opposite)
+                continue;
+            vertices[j] = vertex_id(face->vertex(i));
+            auto periodic_point = pdt.periodic_point(face, i);
+            offsets[j] = { periodic_point.second[0], periodic_point.second[1] };
+            ++j;
+        }
+        detail::emit_periodic_lift(vertices, offsets, seen_edges, add_simplex);
+    }
+
+    for (auto vit = pdt.finite_vertices_begin(); vit != pdt.finite_vertices_end(); ++vit) {
+        Vertex_handle vertex = vit;
+        auto periodic_point = pdt.periodic_point(vertex);
+        detail::emit_periodic_lift(
+            std::array<unsigned, 1>{ vertex_id(vertex) },
+            Offsets1{ std::array<int, 2>{ periodic_point.second[0], periodic_point.second[1] } },
+            seen_vertices,
+            add_simplex);
+    }
+}
+
 template<bool exact>
 template<class Points, class SimplexCallback>
 void
@@ -2412,6 +2560,105 @@ fill_periodic_delaunay(const Points& points, const SimplexCallback& add_simplex,
     for (auto vit = pdt.vertices_begin(); vit != pdt.vertices_end(); ++vit) {
         unsigned idx = vit->info();
         if (idx < seen_v.size() && !seen_v[idx]) { seen_v[idx] = 1; add_simplex(std::array<unsigned, 1>{ idx }); }
+    }
+}
+
+template<bool exact>
+template<class Points, class SimplexCallback>
+void
+diode::AlphaShapes<exact>::
+fill_periodic_delaunay_lifts(const Points& points, const SimplexCallback& add_simplex,
+                             std::array<double, 3> from, std::array<double, 3> to)
+{
+    using K      = detail::Kernel<exact>;
+    using PK     = CGAL::Periodic_3_Delaunay_triangulation_traits_3<K>;
+    using DsVb   = CGAL::Periodic_3_triangulation_ds_vertex_base_3<>;
+    using Vb     = CGAL::Triangulation_vertex_base_3<PK, DsVb>;
+    using VbInfo = CGAL::Triangulation_vertex_base_with_info_3<unsigned, PK, Vb>;
+    using DsCb   = CGAL::Periodic_3_triangulation_ds_cell_base_3<>;
+    using Cb     = CGAL::Triangulation_cell_base_3<PK, DsCb>;
+    using TDS    = CGAL::Triangulation_data_structure_3<VbInfo, Cb>;
+    using PDT    = CGAL::Periodic_3_Delaunay_triangulation_3<PK, TDS>;
+    using Point         = typename PDT::Point;
+    using Vertex_handle = typename PDT::Vertex_handle;
+    using Cell_handle   = typename PDT::Cell_handle;
+
+    PDT pdt(typename PK::Iso_cuboid_3(from[0], from[1], from[2], to[0], to[1], to[2]));
+    for (unsigned i = 0; i < points.size(); ++i) {
+        Vertex_handle vertex = pdt.insert(Point(points(i, 0), points(i, 1), points(i, 2)));
+        if (vertex != Vertex_handle())
+            vertex->info() = i;
+    }
+
+    // CGAL's one-sheet covering exposes the lattice offsets for each simplex
+    // occurrence while keeping the traversal finite. The predicate certifies
+    // that this is a valid simplicial complex; conversion removes the 27-sheet
+    // replicas, leaving one stored representative per simplex for the iterators
+    // below, without application-level deduplication.
+    if (pdt.is_triangulation_in_1_sheet())
+        pdt.convert_to_1_sheeted_covering();
+    else
+        throw std::runtime_error("Cannot convert to 1-sheeted covering");
+
+    using Offsets1 = std::array<std::array<int, 3>, 1>;
+    using Offsets2 = std::array<std::array<int, 3>, 2>;
+    using Offsets3 = std::array<std::array<int, 3>, 3>;
+    using Offsets4 = std::array<std::array<int, 3>, 4>;
+    std::unordered_map<std::array<unsigned, 1>, Offsets1, detail::UnsignedArrayHash<1>> seen_vertices;
+    std::unordered_map<std::array<unsigned, 2>, Offsets2, detail::UnsignedArrayHash<2>> seen_edges;
+    std::unordered_map<std::array<unsigned, 3>, Offsets3, detail::UnsignedArrayHash<3>> seen_facets;
+    std::unordered_map<std::array<unsigned, 4>, Offsets4, detail::UnsignedArrayHash<4>> seen_cells;
+
+    for (auto cit = pdt.cells_begin(); cit != pdt.cells_end(); ++cit) {
+        std::array<unsigned, 4> vertices;
+        Offsets4 offsets;
+        for (int i = 0; i < 4; ++i) {
+            vertices[i] = cit->vertex(i)->info();
+            auto periodic_point = pdt.periodic_point(cit, i);
+            offsets[i] = { periodic_point.second[0], periodic_point.second[1], periodic_point.second[2] };
+        }
+        detail::emit_periodic_lift(vertices, offsets, seen_cells, add_simplex);
+    }
+
+    for (auto fit = pdt.facets_begin(); fit != pdt.facets_end(); ++fit) {
+        Cell_handle cell = fit->first;
+        int opposite = fit->second;
+        std::array<unsigned, 3> vertices;
+        Offsets3 offsets;
+        int j = 0;
+        for (int i = 0; i < 4; ++i) {
+            if (i == opposite)
+                continue;
+            vertices[j] = cell->vertex(i)->info();
+            auto periodic_point = pdt.periodic_point(cell, i);
+            offsets[j] = { periodic_point.second[0], periodic_point.second[1], periodic_point.second[2] };
+            ++j;
+        }
+        detail::emit_periodic_lift(vertices, offsets, seen_facets, add_simplex);
+    }
+
+    for (auto eit = pdt.edges_begin(); eit != pdt.edges_end(); ++eit) {
+        Cell_handle cell = eit->first;
+        std::array<unsigned, 2> vertices {
+            cell->vertex(eit->second)->info(),
+            cell->vertex(eit->third)->info()
+        };
+        auto first = pdt.periodic_point(cell, eit->second);
+        auto second = pdt.periodic_point(cell, eit->third);
+        Offsets2 offsets {
+            std::array<int, 3>{ first.second[0], first.second[1], first.second[2] },
+            std::array<int, 3>{ second.second[0], second.second[1], second.second[2] }
+        };
+        detail::emit_periodic_lift(vertices, offsets, seen_edges, add_simplex);
+    }
+
+    for (auto vit = pdt.vertices_begin(); vit != pdt.vertices_end(); ++vit) {
+        auto periodic_point = pdt.periodic_point(vit);
+        detail::emit_periodic_lift(
+            std::array<unsigned, 1>{ vit->info() },
+            Offsets1{ std::array<int, 3>{ periodic_point.second[0], periodic_point.second[1], periodic_point.second[2] } },
+            seen_vertices,
+            add_simplex);
     }
 }
 

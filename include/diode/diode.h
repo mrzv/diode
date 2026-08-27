@@ -144,6 +144,16 @@ struct AlphaShapes
     static void fill_periodic_delaunay(const Points& points, const SimplexCallback& add_simplex,
                                     std::array<double, 3> from, std::array<double, 3> to);
 
+    // Offset-aware periodic Delaunay export (3D, unweighted). The callback is
+    // invoked as add_simplex(vertices, offsets), where offsets has shape
+    // (simplex_size, 3). Vertex ids are sorted, the offsets follow the same
+    // permutation, and the first sorted vertex has offset zero. A repeated
+    // vertex-id tuple after conversion to a one-sheet covering is an error.
+    // CGAL's conversion normally emits one stored representative per simplex.
+    template<class Points, class SimplexCallback>
+    static void fill_periodic_delaunay_lifts(const Points& points, const SimplexCallback& add_simplex,
+                                    std::array<double, 3> from, std::array<double, 3> to);
+
 
 #if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
     template<class Points, class SimplexCallback>
@@ -216,6 +226,14 @@ void fill_delaunay2d(const Points& points, const SimplexCallback& add_simplex);
 // Callback: add_simplex(vertices).
 template<bool exact, class Points, class SimplexCallback>
 void fill_periodic_delaunay2d(const Points& points, const SimplexCallback& add_simplex,
+                                std::array<double, 2> from, std::array<double, 2> to);
+
+// Offset-aware counterpart of fill_periodic_delaunay2d. The callback receives
+// sorted vertex ids and aligned, common-translation-normalized integer offsets.
+// Repeated vertex-id tuples in the one-sheet covering are errors.
+// CGAL's conversion normally emits one stored representative per simplex.
+template<bool exact, class Points, class SimplexCallback>
+void fill_periodic_delaunay2d_lifts(const Points& points, const SimplexCallback& add_simplex,
                                 std::array<double, 2> from, std::array<double, 2> to);
 
 

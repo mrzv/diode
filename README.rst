@@ -162,6 +162,21 @@ and so on). ``diode.fill_delaunay(...)`` is the equivalent list-of-tuples form.
 are the periodic counterparts (over the cube ``[from, to]``, default the unit
 cube). All four take the same ``exact`` argument as the alpha-shape functions.
 
+Consumers that need periodic geometry as well as combinatorics can use
+``diode.fill_periodic_delaunay_lifts_arrays(...)``::
+
+    >>> vertices, offsets = diode.fill_periodic_delaunay_lifts_arrays(
+    ...     points, bbox_min=[0, 0, 0], bbox_max=[1, 1, 1])
+
+``offsets[d]`` is aligned with ``vertices[d]`` and has shape
+``(n_d, d+1, ambient_dim)``. A lifted coordinate is
+``points[vertices[d]] + offsets[d] * (bbox_max - bbox_min)``. Vertex ids are
+sorted within each simplex and the integer offsets are normalized by a common
+lattice translation so that the first offset is zero. Points must be inside the
+half-open domain ``[bbox_min, bbox_max)``. The exporter converts CGAL's periodic
+triangulation to a one-sheet covering and raises rather than silently merging a
+repeated vertex-id tuple.
+
 
 Exactness
 ~~~~~~~~~

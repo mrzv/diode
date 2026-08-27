@@ -1,6 +1,8 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
+#include <cmath>
+#include <cstdint>
 namespace py = pybind11;
 
 #include <diode/diode.h>
@@ -15,9 +17,13 @@ static void check_periodic_domain(const Vec& from_, const Vec& to_, std::size_t 
 {
     if (from_.size() < dim || to_.size() < dim)
         throw std::runtime_error("from/to must have at least as many entries as the point dimension");
-    for (std::size_t k = 0; k < dim; ++k)
-        if (!(from_[k] < to_[k]))
+    for (std::size_t k = 0; k < dim; ++k) {
+        double extent = to_[k] - from_[k];
+        if (!std::isfinite(from_[k]) || !std::isfinite(to_[k]) || !std::isfinite(extent))
+            throw std::runtime_error("periodic domain bounds and extents must be finite");
+        if (!(extent > 0))
             throw std::runtime_error("periodic domain is empty or inverted: require from[k] < to[k] on every axis");
+    }
 }
 
 // present a numpy array in a way that diode understands
@@ -385,6 +391,28 @@ struct AddSimplexArraysNoVal
     }
 };
 
+struct AddPeriodicSimplexLiftsArrays
+{
+    // Pack aligned simplex vertex ids and lattice offsets into flat NumPy buffers.
+    using Verts = std::array<std::vector<std::int64_t>, 4>;
+    using Offsets = std::array<std::vector<std::int64_t>, 4>;
+    Verts* verts;
+    Offsets* offsets;
+
+    template<std::size_t D, std::size_t AmbientDim>
+    void operator()(const std::array<unsigned, D>& vertices,
+                    const std::array<std::array<int, AmbientDim>, D>& simplex_offsets) const
+    {
+        auto& vb = (*verts)[D - 1];
+        auto& ob = (*offsets)[D - 1];
+        for (std::size_t i = 0; i < D; ++i) {
+            vb.push_back(static_cast<std::int64_t>(vertices[i]));
+            for (int offset : simplex_offsets[i])
+                ob.push_back(static_cast<std::int64_t>(offset));
+        }
+    }
+};
+
 // collect simplices as a flat list of vertex lists (one Python list per simplex).
 struct AddSimplexNoVal
 {
@@ -490,6 +518,104 @@ fill_periodic_delaunay_arrays(py::array a, bool exact, std::vector<double> from_
         verts_by_dim.append(vector_to_numpy(std::move(verts[d]), { n, w }));
     }
     return verts_by_dim;
+}
+
+template<class T>
+void check_periodic_lift_points(const ArrayWrapper<T>& points,
+                                const std::vector<double>& from_,
+                                const std::vector<double>& to_,
+                                std::size_t dim)
+{
+    // Require the unique domain representative assumed by the lift exporter.
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        for (std::size_t axis = 0; axis < dim; ++axis) {
+            double value = static_cast<double>(points(i, axis));
+            if (!std::isfinite(value))
+                throw std::runtime_error("periodic points must be finite");
+            if (value < from_[axis] || value >= to_[axis])
+                throw std::runtime_error("periodic points must lie in the half-open domain [bbox_min, bbox_max)");
+        }
+    }
+}
+
+template<class Cb>
+void run_periodic_delaunay_lifts_traversal(py::array a, bool exact,
+                                           std::vector<double> from_, std::vector<double> to_,
+                                           const Cb& cb)
+{
+    // Validate and dispatch the 2D/3D periodic lift traversal by dtype and kernel.
+    if (a.ndim() != 2)
+        throw std::runtime_error("Unknown input dimension: can only process 2D arrays");
+    auto cols = a.shape()[1];
+    if (cols != 2 && cols != 3)
+        throw std::runtime_error("Can only handle 2D or 3D Delaunay triangulations");
+    check_periodic_domain(from_, to_, static_cast<std::size_t>(cols));
+    bool is_float = a.dtype().is(py::dtype::of<float>());
+    bool is_double = a.dtype().is(py::dtype::of<double>());
+    if (!is_float && !is_double)
+        throw std::runtime_error("Unknown array dtype");
+    if (is_float)
+        check_periodic_lift_points(ArrayWrapper<float>(a), from_, to_, static_cast<std::size_t>(cols));
+    else
+        check_periodic_lift_points(ArrayWrapper<double>(a), from_, to_, static_cast<std::size_t>(cols));
+
+    if (cols == 3) {
+        std::array<double, 3> from { from_[0], from_[1], from_[2] };
+        std::array<double, 3> to { to_[0], to_[1], to_[2] };
+        auto run = [&](auto etag) {
+            constexpr bool E = decltype(etag)::value;
+            if (is_float)
+                diode::AlphaShapes<E>::fill_periodic_delaunay_lifts(ArrayWrapper<float>(a), cb, from, to);
+            else
+                diode::AlphaShapes<E>::fill_periodic_delaunay_lifts(ArrayWrapper<double>(a), cb, from, to);
+        };
+        if (exact)
+            run(std::true_type{});
+        else
+            run(std::false_type{});
+    } else {
+        std::array<double, 2> from { from_[0], from_[1] };
+        std::array<double, 2> to { to_[0], to_[1] };
+        auto run = [&](auto etag) {
+            constexpr bool E = decltype(etag)::value;
+            if (is_float)
+                diode::fill_periodic_delaunay2d_lifts<E>(ArrayWrapper<float>(a), cb, from, to);
+            else
+                diode::fill_periodic_delaunay2d_lifts<E>(ArrayWrapper<double>(a), cb, from, to);
+        };
+        if (exact)
+            run(std::true_type{});
+        else
+            run(std::false_type{});
+    }
+}
+
+py::object
+fill_periodic_delaunay_lifts_arrays(py::array a, bool exact,
+                                    std::vector<double> bbox_min, std::vector<double> bbox_max)
+{
+    // Materialize the callback stream as parallel per-dimension NumPy arrays.
+    AddPeriodicSimplexLiftsArrays::Verts verts;
+    AddPeriodicSimplexLiftsArrays::Offsets offsets;
+    run_periodic_delaunay_lifts_traversal(
+        a, exact, bbox_min, bbox_max, AddPeriodicSimplexLiftsArrays { &verts, &offsets });
+
+    int max_dim = -1;
+    for (int dim = 0; dim < 4; ++dim)
+        if (!verts[dim].empty())
+            max_dim = dim;
+
+    py::list verts_by_dim;
+    py::list offsets_by_dim;
+    py::ssize_t ambient_dim = a.shape()[1];
+    for (int dim = 0; dim <= max_dim; ++dim) {
+        py::ssize_t width = dim + 1;
+        py::ssize_t count = static_cast<py::ssize_t>(verts[dim].size()) / width;
+        verts_by_dim.append(vector_to_numpy(std::move(verts[dim]), { count, width }));
+        offsets_by_dim.append(vector_to_numpy(
+            std::move(offsets[dim]), { count, width, ambient_dim }));
+    }
+    return py::make_tuple(verts_by_dim, offsets_by_dim);
 }
 
 // returns a flat list of vertex lists for the periodic Delaunay triangulation.
@@ -926,6 +1052,17 @@ PYBIND11_MODULE(diode, m)
           "to"_a   = std::vector<double> {1.,1.,1.},
           "Periodic Delaunay simplices as a flat list of vertex lists, WITHOUT alpha\n"
           "values. List form of fill_periodic_delaunay_arrays.");
+    m.def("fill_periodic_delaunay_lifts_arrays", &fill_periodic_delaunay_lifts_arrays,
+          "data"_a, "exact"_a = false,
+          "bbox_min"_a = std::vector<double> {0.,0.,0.},
+          "bbox_max"_a = std::vector<double> {1.,1.,1.},
+          "Periodic Delaunay simplices and coherent lattice offsets as aligned\n"
+          "per-dimension NumPy arrays. Returns (verts_by_dim, offsets_by_dim),\n"
+          "where verts_by_dim[d] has shape (n_d, d+1) and offsets_by_dim[d]\n"
+          "has shape (n_d, d+1, ambient_dim). Vertex ids are sorted within each\n"
+          "row and offsets are normalized so the first offset is zero. Points\n"
+          "must lie in the half-open periodic domain. Repeated vertex-id rows\n"
+          "after conversion to a one-sheet covering raise an error.");
     m.def("fill_weighted_delaunay_arrays", &fill_weighted_delaunay_arrays,
           "data"_a, "exact"_a = false,
           "Regular-triangulation (weighted Delaunay) simplices as per-dimension NumPy\n"
@@ -1022,4 +1159,3 @@ PYBIND11_MODULE(diode, m)
 #endif
     m.def("circumcenter", &circumcenter, "points"_a, "exact"_a = false, "returns circumcenter of the intput points");
 }
-
