@@ -7,7 +7,7 @@ name = "diode"
 version = "1.2.2"
 
 authors = [ { name = "Dmitriy Morozov",  email = "dmitriy@mrzv.org" } ]
-description= "alpha shape generator using CGAL"
+description = "Alpha shape generator using Geogram"
 readme = "README.rst"
 license = "GPL-3.0-or-later"
 

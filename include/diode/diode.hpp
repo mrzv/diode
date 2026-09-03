@@ -1,2809 +1,610 @@
-#include <sstream>
-#include <map>
-#include <unordered_map>
-#include <unordered_set>
+#include <geogram/basic/numeric.h>
+#include <geogram/delaunay/delaunay.h>
+#include <geogram/delaunay/delaunay_2d.h>
+#include <geogram/delaunay/delaunay_3d.h>
+
 #include <algorithm>
-#include <array>
-#include <CGAL/Alpha_shape_vertex_base_3.h>
+#include <cmath>
+#include <limits>
+#include <map>
+#include <mutex>
+#include <set>
+#include <stdexcept>
+#include <vector>
 
-namespace diode
-{
-namespace detail
-{
+namespace diode {
+namespace detail {
 
-template<std::size_t N>
-struct UnsignedArrayHash
-{
-    // Hash fixed-size simplex vertex tuples for the periodic-lift lookup tables.
-    std::size_t operator()(const std::array<unsigned, N>& values) const
-    {
-        std::size_t hash = 0;
-        for (unsigned value : values)
-            hash = hash * 1000003u ^ value;
-        return hash;
+inline void initialize_geogram() {
+    static std::once_flag once;
+    std::call_once(once, [] { GEO::initialize(); });
+}
+
+template<std::size_t D> using Point = std::array<double, D>;
+
+template<std::size_t D> struct Vertex {
+    unsigned id;
+    Point<D> point;
+    std::array<int, D> offset{};
+    double weight = 0.0;
+};
+
+template<std::size_t N, std::size_t D> struct LiftKey {
+    std::array<unsigned, N> vertices{};
+    std::array<std::array<int, D>, N> offsets{};
+    bool operator<(const LiftKey& rhs) const {
+        return vertices < rhs.vertices || (!(rhs.vertices < vertices) && offsets < rhs.offsets);
     }
 };
 
-template<std::size_t N, std::size_t AmbientDim, class SimplexCallback>
-void emit_periodic_lift(
-        std::array<unsigned, N> vertices,
-        std::array<std::array<int, AmbientDim>, N> offsets,
-        std::unordered_map<std::array<unsigned, N>,
-                           std::array<std::array<int, AmbientDim>, N>,
-                           UnsignedArrayHash<N>>& seen,
-        const SimplexCallback& add_simplex)
-{
-    // Canonicalize CGAL's offset-dependent simplex occurrence, retaining its
-    // relative lattice placement and rejecting incompatible duplicate lifts.
-    // A preceding one-sheet conversion makes each canonical simplex unique;
-    // `seen` is therefore an invariant check, not a duplicate-removal pass.
-    // Repeated tuples with matching offsets also fail that uniqueness invariant.
-    std::array<std::size_t, N> order;
-    for (std::size_t i = 0; i < N; ++i)
-        order[i] = i;
-    std::sort(order.begin(), order.end(),
-              [&](std::size_t i, std::size_t j) { return vertices[i] < vertices[j]; });
-
-    std::array<unsigned, N> sorted_vertices;
-    std::array<std::array<int, AmbientDim>, N> sorted_offsets;
-    for (std::size_t i = 0; i < N; ++i) {
-        sorted_vertices[i] = vertices[order[i]];
-        sorted_offsets[i] = offsets[order[i]];
-    }
-
-    const auto base_offset = sorted_offsets[0];
-    for (auto& offset : sorted_offsets)
-        for (std::size_t axis = 0; axis < AmbientDim; ++axis)
-            offset[axis] -= base_offset[axis];
-
-    auto result = seen.emplace(sorted_vertices, sorted_offsets);
-    if (!result.second) {
-        std::ostringstream message;
-        message << "Periodic one-sheet traversal emitted vertex tuple (";
-        for (std::size_t i = 0; i < N; ++i) {
-            if (i)
-                message << ", ";
-            message << sorted_vertices[i];
-        }
-        if (result.first->second == sorted_offsets)
-            message << ") more than once";
-        else
-            message << ") with different relative lattice offsets; vertex-id simplex identity cannot represent both lifts";
-        throw std::runtime_error(message.str());
-    }
-
-    add_simplex(sorted_vertices, sorted_offsets);
-}
-
-template<class NT>
-double to_floating_point(const NT& x, typename std::enable_if< !std::is_floating_point<NT>::value >::type* = 0)
-{ return CGAL::to_double(x.exact()); }
-
-// do nothing, if we already have a floating point type
-template<class T>
-T to_floating_point(T x, typename std::enable_if< std::is_floating_point<T>::value >::type* = 0)
-{ return x; }
-
-template<bool exact>
-using Kernel = typename std::conditional<exact,
-                                         CGAL::Exact_predicates_exact_constructions_kernel,
-                                         CGAL::Exact_predicates_inexact_constructions_kernel>::type;
-
-// CGAL merges coincident input points into a single vertex, keeping the info of
-// whichever copy it inserted. The std::map-based reference (_slow) paths instead
-// keep the LAST input index for a repeated point. Re-label the bulk-inserted fast
-// triangulations to match, so they agree with _slow on duplicate coordinates.
-// Guarded by one size check: a no-op when every input point is its own vertex
-// (the common case; only triggers when CGAL dropped vertices -- duplicates, or, for
-// regular triangulations, hidden weighted points, which it relabels harmlessly).
-template<class Tri, class Points, class MakePoint>
-void relabel_duplicates_last_wins(Tri& dt, const Points& points, MakePoint make_point)
-{
-    if (dt.number_of_vertices() >= static_cast<std::size_t>(points.size()))
-        return;
-    using P = decltype(make_point(static_cast<unsigned>(0)));
-    std::map<P, unsigned> last_index;
-    for (unsigned i = 0; i < points.size(); ++i)
-        last_index[make_point(i)] = i;
-    for (auto v = dt.finite_vertices_begin(); v != dt.finite_vertices_end(); ++v) {
-        // Every surviving vertex of a (non-periodic) Delaunay/regular triangulation is
-        // one of the inserted points, so find() always hits here; guard it anyway and
-        // leave the bulk-inserted index in place if it somehow doesn't, never deref end().
-        auto it = last_index.find(v->point());
-        if (it != last_index.end())
-            v->info() = it->second;
-    }
-}
-
-template<class Delaunay_, class Point_ = typename Delaunay_::Point, class Vertex_ = unsigned>
-struct AlphaShapeWrapper
-{
-    using Vertex     = Vertex_;
-    using Delaunay   = Delaunay_;
-    using AlphaShape = CGAL::Alpha_shape_3<Delaunay>;
-    using Point      = Point_;
-    using FT         = typename AlphaShape::FT;
-    using PointsMap  = std::map<Point, Vertex>;
-
-    // Helpers: build the vertex list of a CGAL simplex (cell/facet/edge/vertex).
-    static std::vector<Vertex> verts_of_cell(typename AlphaShape::Cell_handle c, const PointsMap& points)
-    {
-        std::vector<Vertex> vs(4);
-        for (size_t i = 0; i < 4; ++i)
-            vs[i] = points.find(c->vertex(i)->point())->second;
-        return vs;
-    }
-
-    static std::vector<Vertex> verts_of_facet(const typename AlphaShape::Facet& f, const PointsMap& points)
-    {
-        std::vector<Vertex> vs;
-        vs.reserve(3);
-        typename AlphaShape::Cell_handle c = f.first;
-        for (size_t i = 0; i < 4; ++i)
-            if (static_cast<int>(i) != f.second)
-                vs.push_back(points.find(c->vertex(i)->point())->second);
-        return vs;
-    }
-
-    static std::vector<Vertex> verts_of_edge(const typename AlphaShape::Edge& e, const PointsMap& points)
-    {
-        typename AlphaShape::Cell_handle c = e.first;
-        std::vector<Vertex> vs(2);
-        vs[0] = points.find(c->vertex(e.second)->point())->second;
-        vs[1] = points.find(c->vertex(e.third)->point())->second;
-        return vs;
-    }
-
-    static std::vector<Vertex> verts_of_vertex(typename AlphaShape::Vertex_handle v, const PointsMap& points)
-    {
-        return std::vector<Vertex> { points.find(v->point())->second };
-    }
-
-    // Find a Gabriel coface tau of facet f such that squared_circumradius(tau) == alpha.
-    // For non-Gabriel facets, tau is one of the at-most-two adjacent finite cells.
-    static std::vector<Vertex> find_attacher_for_facet(
-        const typename AlphaShape::Facet& f,
-        const AlphaShape& as,
-        const FT& alpha,
-        const PointsMap& points)
-    {
-        auto fas = as.get_alpha_status(f);
-        if (fas.is_Gabriel())
-            return verts_of_facet(f, points);
-
-        typename AlphaShape::Cell_handle c0 = f.first;
-        typename AlphaShape::Cell_handle c1 = c0->neighbor(f.second);
-        if (!as.is_infinite(c0) && c0->get_alpha() == alpha)
-            return verts_of_cell(c0, points);
-        if (!as.is_infinite(c1) && c1->get_alpha() == alpha)
-            return verts_of_cell(c1, points);
-        throw std::runtime_error("find_attacher_for_facet: no matching coface");
-    }
-
-    // Find a Gabriel coface tau of edge e such that squared_circumradius(tau) == alpha.
-    // Search order: Gabriel facets (lower-dim) first, then incident cells.
-    static std::vector<Vertex> find_attacher_for_edge(
-        const typename AlphaShape::Edge& e,
-        const AlphaShape& as,
-        const FT& alpha,
-        const PointsMap& points)
-    {
-        auto eas = as.get_alpha_status(e);
-        if (eas.is_Gabriel())
-            return verts_of_edge(e, points);
-
-        typename AlphaShape::Cell_handle c = e.first;
-        int i = e.second;
-        int j = e.third;
-
-        // Gabriel facets first (they correspond to Gabriel-facet-contributions in compute_edge_status).
-        typename AlphaShape::Facet_circulator fcirc = as.incident_facets(c, i, j);
-        typename AlphaShape::Facet_circulator fdone = fcirc;
-        do {
-            if (!as.is_infinite(*fcirc)) {
-                auto fas_it = (*fcirc).first->get_facet_status((*fcirc).second);
-                if (fas_it->is_Gabriel() && fas_it->alpha_min() == alpha)
-                    return verts_of_facet(*fcirc, points);
-            }
-        } while (++fcirc != fdone);
-
-        // Then incident cells.
-        typename AlphaShape::Cell_circulator ccirc = as.incident_cells(c, i, j);
-        typename AlphaShape::Cell_circulator cdone = ccirc;
-        do {
-            if (!as.is_infinite(ccirc)) {
-                if (ccirc->get_alpha() == alpha)
-                    return verts_of_cell(ccirc, points);
-            }
-        } while (++ccirc != cdone);
-
-        throw std::runtime_error("find_attacher_for_edge: no matching coface");
-    }
-
-    // Find a Gabriel coface tau of vertex v such that squared_circumradius(tau) == alpha.
-    // For unweighted alpha shapes (Tag_false), every vertex is itself Gabriel and
-    // the search reduces to tau = v.
-    static std::vector<Vertex> find_attacher_for_vertex(
-        typename AlphaShape::Vertex_handle v,
-        const AlphaShape& as,
-        const FT& alpha,
-        const PointsMap& points)
-    {
-        // Fast path for the unweighted case: vertices are always Gabriel.
-        // Detected via is_Gabriel() to keep the helper safe in weighted/extended contexts.
-        auto* vas = v->get_alpha_status();
-        if (vas->is_Gabriel())
-            return verts_of_vertex(v, points);
-
-        // Weighted / general case: search incident Gabriel edges, then Gabriel facets,
-        // then incident cells. Lower-dim attacher preferred.
-        std::vector<typename AlphaShape::Edge> incident_es;
-        as.incident_edges(v, std::back_inserter(incident_es));
-        for (const auto& e : incident_es)
-        {
-            if (as.is_infinite(e)) continue;
-            auto eas = as.get_alpha_status(e);
-            if (eas.is_Gabriel() && eas.alpha_min() == alpha)
-                return verts_of_edge(e, points);
-        }
-
-        std::vector<typename AlphaShape::Facet> incident_fs;
-        as.incident_facets(v, std::back_inserter(incident_fs));
-        for (const auto& f : incident_fs)
-        {
-            if (as.is_infinite(f)) continue;
-            auto fas_it = f.first->get_facet_status(f.second);
-            if (fas_it->is_Gabriel() && fas_it->alpha_min() == alpha)
-                return verts_of_facet(f, points);
-        }
-
-        std::vector<typename AlphaShape::Cell_handle> incident_cs;
-        as.incident_cells(v, std::back_inserter(incident_cs));
-        for (auto c : incident_cs)
-        {
-            if (as.is_infinite(c)) continue;
-            if (c->get_alpha() == alpha)
-                return verts_of_cell(c, points);
-        }
-
-        throw std::runtime_error("find_attacher_for_vertex: no matching coface");
-    }
-
-    // CGAL's peculiar design for its output of the alpha shape filtration requires
-    // that once dereferenced this output iterator can be assigned both a
-    // CGAL::Object and K::FT. The two are assigned in sequence. This requires
-    // keeping state, namely, the last assigned object.
-    template<class AddSimplex>
-    struct ASOutputIterator3
-    {
-                          ASOutputIterator3(const AddSimplex& add_simplex_, const PointsMap& points_):
-                              add_simplex(add_simplex_), points(points_)       {}
-
-        ASOutputIterator3& operator*()                       { return *this; }
-        ASOutputIterator3& operator=(const CGAL::Object& o_) { o = o_; return *this; }       // store the object for later
-        ASOutputIterator3& operator=(const FT& a)
-        {
-            using V = typename AlphaShape::Vertex_handle;
-            using E = typename AlphaShape::Edge;
-            using F = typename AlphaShape::Facet;
-            using C = typename AlphaShape::Cell_handle;
-
-            if (const V* v = CGAL::object_cast<V>(&o))
-            {
-                auto u = points.find((*v)->point())->second;
-                std::array<Vertex, 1> vertices { u };
-                add_simplex(vertices, to_floating_point(a));
-            }
-            else if (const E* e = CGAL::object_cast<E>(&o))
-            {
-                C c = e->first;
-                auto u = points.find(c->vertex(e->second)->point())->second;
-                auto v = points.find(c->vertex(e->third)->point())->second;
-                std::array<Vertex, 2> vertices { u, v };
-                add_simplex(vertices, to_floating_point(a));
-            }
-            else if (const F* f = CGAL::object_cast<F>(&o))
-            {
-                std::array<Vertex, 3> vertices;
-                size_t j = 0;
-                C c = f->first;
-                for (size_t i = 0; i < 4; ++i)
-                    if (i != f->second)
-                        vertices[j++] = points.find(c->vertex(i)->point())->second;
-                add_simplex(vertices, to_floating_point(a));
-            } else if (const C* c = CGAL::object_cast<C>(&o))
-            {
-                std::array<Vertex, 4> vertices;
-                for (size_t i = 0; i < 4; ++i)
-                    vertices[i] = points.find((*c)->vertex(i)->point())->second;
-                add_simplex(vertices, to_floating_point(a));
-            } else
-                throw std::runtime_error("Unknown object type in ASOutputIterator3");
-
-            return *this;
-        }
-
-        ASOutputIterator3& operator++()                      { return *this; }
-        ASOutputIterator3& operator++(int)                   { return *this; }
-
-        const AddSimplex&   add_simplex;
-        const PointsMap&    points;
-        CGAL::Object        o;
-    };
-
-    // Output iterator that, in addition to the simplex and its alpha value,
-    // computes a Gabriel coface tau (the "attacher") and emits its vertex tuple.
-    // Callback signature: add_simplex(sigma_vertices, alpha, tau_vertices).
-    template<class AddSimplex>
-    struct ASOutputIterator3WithAttachment
-    {
-                          ASOutputIterator3WithAttachment(const AddSimplex& add_simplex_,
-                                                          const PointsMap& points_,
-                                                          const AlphaShape& as_):
-                              add_simplex(add_simplex_), points(points_), as(&as_) {}
-
-        ASOutputIterator3WithAttachment& operator*()                       { return *this; }
-        ASOutputIterator3WithAttachment& operator=(const CGAL::Object& o_) { o = o_; return *this; }
-        ASOutputIterator3WithAttachment& operator=(const FT& a)
-        {
-            using V = typename AlphaShape::Vertex_handle;
-            using E = typename AlphaShape::Edge;
-            using F = typename AlphaShape::Facet;
-            using C = typename AlphaShape::Cell_handle;
-
-            if (const V* v = CGAL::object_cast<V>(&o))
-            {
-                auto u = points.find((*v)->point())->second;
-                std::array<Vertex, 1> vertices { u };
-                auto tau = find_attacher_for_vertex(*v, *as, a, points);
-                add_simplex(vertices, to_floating_point(a), tau);
-            }
-            else if (const E* e = CGAL::object_cast<E>(&o))
-            {
-                C c = e->first;
-                auto u = points.find(c->vertex(e->second)->point())->second;
-                auto vv = points.find(c->vertex(e->third)->point())->second;
-                std::array<Vertex, 2> vertices { u, vv };
-                auto tau = find_attacher_for_edge(*e, *as, a, points);
-                add_simplex(vertices, to_floating_point(a), tau);
-            }
-            else if (const F* f = CGAL::object_cast<F>(&o))
-            {
-                std::array<Vertex, 3> vertices;
-                size_t j = 0;
-                C c = f->first;
-                for (size_t i = 0; i < 4; ++i)
-                    if (i != f->second)
-                        vertices[j++] = points.find(c->vertex(i)->point())->second;
-                auto tau = find_attacher_for_facet(*f, *as, a, points);
-                add_simplex(vertices, to_floating_point(a), tau);
-            } else if (const C* c = CGAL::object_cast<C>(&o))
-            {
-                std::array<Vertex, 4> vertices;
-                for (size_t i = 0; i < 4; ++i)
-                    vertices[i] = points.find((*c)->vertex(i)->point())->second;
-                auto tau = verts_of_cell(*c, points);   // cells are always Gabriel
-                add_simplex(vertices, to_floating_point(a), tau);
-            } else
-                throw std::runtime_error("Unknown object type in ASOutputIterator3WithAttachment");
-
-            return *this;
-        }
-
-        ASOutputIterator3WithAttachment& operator++()                      { return *this; }
-        ASOutputIterator3WithAttachment& operator++(int)                   { return *this; }
-
-        const AddSimplex&   add_simplex;
-        const PointsMap&    points;
-        const AlphaShape*   as;
-        CGAL::Object        o;
-    };
-
-    template<class AddSimplex>
-    static void fill_filtration(Delaunay& dt, const PointsMap& points_map, const AddSimplex& add_simplex)
-    {
-        AlphaShape as(dt, std::numeric_limits<FT>::infinity(), AlphaShape::GENERAL);
-        as.filtration_with_alpha_values(ASOutputIterator3<AddSimplex>(add_simplex, points_map));
-    }
-
-    template<class AddSimplex>
-    static void fill_filtration_with_attachment(Delaunay& dt, const PointsMap& points_map, const AddSimplex& add_simplex)
-    {
-        AlphaShape as(dt, std::numeric_limits<FT>::infinity(), AlphaShape::GENERAL);
-        as.filtration_with_alpha_values(ASOutputIterator3WithAttachment<AddSimplex>(add_simplex, points_map, as));
-    }
+template<std::size_t N, std::size_t D> struct Record {
+    LiftKey<N,D> key;
+    std::array<Point<D>,N> points{};
+    std::array<double,N> weights{};
+    std::vector<std::pair<Point<D>,double>> witnesses;
+    double alpha = std::numeric_limits<double>::infinity();
+    std::vector<unsigned> tau;
 };
 
-
-
-}   // detail
-}   // diode
-
-template<bool exact>
-template<class Points, class SimplexCallback>
-void
-diode::AlphaShapes<exact>::
-fill_alpha_shapes(const Points& points, const SimplexCallback& add_simplex)
-{
-    using K          = detail::Kernel<exact>;
-    using Vb         = CGAL::Alpha_shape_vertex_base_3<K>;
-    using Fb         = CGAL::Alpha_shape_cell_base_3<K>;
-    using TDS        = CGAL::Triangulation_data_structure_3<Vb,Fb>;
-    using Delaunay   = CGAL::Delaunay_triangulation_3<K,TDS,CGAL::Fast_location>;
-
-    using ASWrapper  = detail::AlphaShapeWrapper<Delaunay>;
-    using PointsMap  = typename ASWrapper::PointsMap;
-    using AlphaShape = typename ASWrapper::AlphaShape;
-    using Vertex     = typename ASWrapper::Vertex;
-    using Point      = typename ASWrapper::Point;
-
-    PointsMap points_map;
-    for (Vertex i = 0; i < points.size(); ++i)
-    {
-        Point p(points(i,0), points(i,1), points(i,2));
-        points_map[p] = i;
+template<std::size_t N, std::size_t D>
+LiftKey<N,D> canonicalize(std::array<Vertex<D>,N>& simplex) {
+    std::sort(simplex.begin(), simplex.end(), [](const auto& a, const auto& b) { return a.id < b.id; });
+    LiftKey<N,D> key;
+    const auto base = simplex[0].offset;
+    for(std::size_t i=0; i<N; ++i) {
+        key.vertices[i] = simplex[i].id;
+        for(std::size_t d=0; d<D; ++d) key.offsets[i][d] = simplex[i].offset[d] - base[d];
     }
-
-    auto points_range = points_map | boost::adaptors::map_keys;
-    Delaunay dt(std::begin(points_range), std::end(points_range));
-    ASWrapper::fill_filtration(dt, points_map, add_simplex);
+    return key;
 }
 
-template<bool exact>
-template<class Points, class SimplexCallback>
-void
-diode::AlphaShapes<exact>::
-fill_alpha_shapes_direct(const Points& points, const SimplexCallback& add_simplex)
-{
-    using K     = detail::Kernel<exact>;
-    using Vb    = CGAL::Triangulation_vertex_base_with_info_3<unsigned, K>;
-    using Cb    = CGAL::Triangulation_cell_base_with_info_3<double, K>;
-    using TDS   = CGAL::Triangulation_data_structure_3<Vb, Cb>;
-    using DT    = CGAL::Delaunay_triangulation_3<K, TDS, CGAL::Fast_location>;
-    using Point = typename K::Point_3;
-
-    // Bulk-insert points carrying their original index in the vertex info, so we
-    // never need a Point->index map: vertex->info() is an O(1) lookup.
-    DT dt;
-    {
-        std::vector<std::pair<Point, unsigned>> pts;
-        pts.reserve(points.size());
-        for (unsigned i = 0; i < points.size(); ++i)
-            pts.emplace_back(Point(points(i, 0), points(i, 1), points(i, 2)), i);
-        dt.insert(pts.begin(), pts.end());   // spatial-sort accelerated
-    }
-
-    // Degenerate (collinear/coplanar/<=1 point) input: the full-dimensional facet/
-    // edge walk below dereferences invalid neighbor cells. Defer to the reference
-    // path, which defines the degenerate result (CGAL::Alpha_shape_3 yields nothing
-    // for a non-3D point set).
-    if (dt.dimension() < 3) {
-        fill_alpha_shapes(points, add_simplex);
-        return;
-    }
-    detail::relabel_duplicates_last_wins(dt, points,
-        [&](unsigned i) { return Point(points(i, 0), points(i, 1), points(i, 2)); });
-
-    // Respect `exact`: for the exact (EPECK) kernel, to_floating_point forces
-    // CGAL::exact() before converting; for the inexact (EPICK) kernel its FT is
-    // double and this is an identity (no overhead). Same convention as the rest
-    // of diode (see detail::to_floating_point and the Alpha_shape_3 path).
-    auto sq = [](auto&&... ps) { return detail::to_floating_point(CGAL::squared_radius(ps...)); };
-
-    // packed key over sorted vertex indices for the per-facet alpha map (no
-    // per-simplex allocation, unlike a std::vector key)
-    struct Key3 {
-        unsigned a, b, c;
-        bool operator==(const Key3& o) const { return a == o.a && b == o.b && c == o.c; }
-    };
-    struct Key3Hash {
-        std::size_t operator()(const Key3& k) const
-        {
-            std::size_t h = k.a;
-            h = h * 1000003u ^ k.b;
-            h = h * 1000003u ^ k.c;
-            return h;
+template<std::size_t N, std::size_t D>
+Record<N,D>& add_record(std::map<LiftKey<N,D>,Record<N,D>>& records,
+                        std::array<Vertex<D>,N> simplex) {
+    auto key = canonicalize(simplex);
+    auto [it, inserted] = records.emplace(key, Record<N,D>{});
+    if(inserted) {
+        it->second.key = key;
+        for(std::size_t i=0; i<N; ++i) {
+            it->second.points[i] = simplex[i].point;
+            it->second.weights[i] = simplex[i].weight;
         }
-    };
-    auto key3 = [](unsigned a, unsigned b, unsigned c) {
-        if (a > b) std::swap(a, b);
-        if (b > c) std::swap(b, c);
-        if (a > b) std::swap(a, b);
-        return Key3{a, b, c};
-    };
-
-    // facet vertex indices (the 3 vertices of facet (cell, i) are vertices != i)
-    auto facet_idx = [](typename DT::Cell_handle c, int i) {
-        return std::array<unsigned, 3>{ c->vertex((i + 1) & 3)->info(),
-                                        c->vertex((i + 2) & 3)->info(),
-                                        c->vertex((i + 3) & 3)->info() };
-    };
-
-    // dim 3 (tetrahedra): alpha = squared circumradius; stash on cell info for facets
-    for (auto cit = dt.finite_cells_begin(); cit != dt.finite_cells_end(); ++cit) {
-        double a = sq(cit->vertex(0)->point(), cit->vertex(1)->point(),
-                      cit->vertex(2)->point(), cit->vertex(3)->point());
-        cit->info() = a;
-        add_simplex(std::array<unsigned, 4>{ cit->vertex(0)->info(), cit->vertex(1)->info(),
-                                             cit->vertex(2)->info(), cit->vertex(3)->info() }, a);
     }
-
-    // dim 2 (facets): Gabriel ? own circumradius : min over the <=2 incident cells
-    std::unordered_map<Key3, double, Key3Hash> facet_alpha;
-    facet_alpha.reserve(dt.number_of_finite_facets());
-    for (auto fit = dt.finite_facets_begin(); fit != dt.finite_facets_end(); ++fit) {
-        typename DT::Facet f = *fit;
-        typename DT::Cell_handle c = f.first;
-        int i = f.second;
-        auto vs = facet_idx(c, i);
-        double a;
-        if (dt.is_Gabriel(f)) {
-            a = sq(c->vertex((i + 1) & 3)->point(), c->vertex((i + 2) & 3)->point(),
-                   c->vertex((i + 3) & 3)->point());
-        } else {
-            typename DT::Cell_handle c1 = c->neighbor(i);
-            double best = std::numeric_limits<double>::infinity();
-            if (!dt.is_infinite(c))  best = std::min(best, c->info());
-            if (!dt.is_infinite(c1)) best = std::min(best, c1->info());
-            a = best;
-        }
-        facet_alpha.emplace(key3(vs[0], vs[1], vs[2]), a);
-        add_simplex(vs, a);
-    }
-
-    // dim 1 (edges): Gabriel ? own circumradius : min over incident facets
-    for (auto eit = dt.finite_edges_begin(); eit != dt.finite_edges_end(); ++eit) {
-        typename DT::Edge e = *eit;
-        auto vh0 = e.first->vertex(e.second);
-        auto vh1 = e.first->vertex(e.third);
-        std::array<unsigned, 2> vs{ vh0->info(), vh1->info() };
-        double a;
-        if (dt.is_Gabriel(e)) {
-            a = sq(vh0->point(), vh1->point());
-        } else {
-            double best = std::numeric_limits<double>::infinity();
-            typename DT::Facet_circulator fc = dt.incident_facets(e), fdone = fc;
-            do {
-                if (!dt.is_infinite(*fc)) {
-                    auto fv = facet_idx(fc->first, fc->second);
-                    auto it = facet_alpha.find(key3(fv[0], fv[1], fv[2]));
-                    if (it != facet_alpha.end()) best = std::min(best, it->second);
-                }
-            } while (++fc != fdone);
-            a = best;
-        }
-        add_simplex(vs, a);
-    }
-
-    // dim 0 (vertices): alpha is 0 for unweighted alpha shapes
-    for (auto vit = dt.finite_vertices_begin(); vit != dt.finite_vertices_end(); ++vit)
-        add_simplex(std::array<unsigned, 1>{ vit->info() }, 0.0);
+    return it->second;
 }
 
-template<bool exact>
-template<class Points, class SimplexCallback>
-void
-diode::AlphaShapes<exact>::
-fill_alpha_shapes_direct_with_attachment(const Points& points, const SimplexCallback& add_simplex)
-{
-    using K     = detail::Kernel<exact>;
-    using Vb    = CGAL::Triangulation_vertex_base_with_info_3<unsigned, K>;
-    using Cb    = CGAL::Triangulation_cell_base_with_info_3<double, K>;
-    using TDS   = CGAL::Triangulation_data_structure_3<Vb, Cb>;
-    using DT    = CGAL::Delaunay_triangulation_3<K, TDS, CGAL::Fast_location>;
-    using Point = typename K::Point_3;
-    constexpr double k_inf = std::numeric_limits<double>::infinity();
-
-    DT dt;
-    {
-        std::vector<std::pair<Point, unsigned>> pts;
-        pts.reserve(points.size());
-        for (unsigned i = 0; i < points.size(); ++i)
-            pts.emplace_back(Point(points(i, 0), points(i, 1), points(i, 2)), i);
-        dt.insert(pts.begin(), pts.end());
-    }
-
-    // Degenerate input (< 3D): defer to the reference (see fill_alpha_shapes_direct).
-    if (dt.dimension() < 3) {
-        fill_alpha_shapes_with_attachment(points, add_simplex);
-        return;
-    }
-    detail::relabel_duplicates_last_wins(dt, points,
-        [&](unsigned i) { return Point(points(i, 0), points(i, 1), points(i, 2)); });
-
-    auto sq = [](auto&&... ps) { return detail::to_floating_point(CGAL::squared_radius(ps...)); };
-
-    struct Key3 {
-        unsigned a, b, c;
-        bool operator==(const Key3& o) const { return a == o.a && b == o.b && c == o.c; }
-    };
-    struct Key3Hash {
-        std::size_t operator()(const Key3& k) const
-        { std::size_t h = k.a; h = h * 1000003u ^ k.b; h = h * 1000003u ^ k.c; return h; }
-    };
-    auto key3 = [](unsigned a, unsigned b, unsigned c) {
-        if (a > b) std::swap(a, b);
-        if (b > c) std::swap(b, c);
-        if (a > b) std::swap(a, b);
-        return Key3{a, b, c};
-    };
-    auto facet_idx = [](typename DT::Cell_handle c, int i) {
-        return std::array<unsigned, 3>{ c->vertex((i + 1) & 3)->info(),
-                                        c->vertex((i + 2) & 3)->info(),
-                                        c->vertex((i + 3) & 3)->info() };
-    };
-    auto cell_idx = [](typename DT::Cell_handle c) {
-        return std::array<unsigned, 4>{ c->vertex(0)->info(), c->vertex(1)->info(),
-                                        c->vertex(2)->info(), c->vertex(3)->info() };
-    };
-
-    // per facet: its alpha + its attacher tau (the facet itself if Gabriel, else
-    // the min-alpha incident cell). tlen says how many of tau's entries are used.
-    struct FInfo { double alpha; std::array<unsigned, 4> tau; unsigned char tlen; };
-
-    // cells: alpha = circumradius; attacher = the cell itself (cells are Gabriel)
-    for (auto cit = dt.finite_cells_begin(); cit != dt.finite_cells_end(); ++cit) {
-        double a = sq(cit->vertex(0)->point(), cit->vertex(1)->point(),
-                      cit->vertex(2)->point(), cit->vertex(3)->point());
-        cit->info() = a;
-        auto vs = cell_idx(cit);
-        add_simplex(vs, a, std::vector<unsigned>(vs.begin(), vs.end()));
-    }
-
-    // facets
-    std::unordered_map<Key3, FInfo, Key3Hash> facet_info;
-    facet_info.reserve(dt.number_of_finite_facets());
-    for (auto fit = dt.finite_facets_begin(); fit != dt.finite_facets_end(); ++fit) {
-        typename DT::Facet f = *fit;
-        typename DT::Cell_handle c = f.first;
-        int i = f.second;
-        auto vs = facet_idx(c, i);
-        FInfo info;
-        if (dt.is_Gabriel(f)) {
-            info.alpha = sq(c->vertex((i + 1) & 3)->point(), c->vertex((i + 2) & 3)->point(),
-                            c->vertex((i + 3) & 3)->point());
-            info.tau = {vs[0], vs[1], vs[2], 0};
-            info.tlen = 3;
-        } else {
-            typename DT::Cell_handle c1 = c->neighbor(i);
-            typename DT::Cell_handle best_c{};
-            double best = k_inf;
-            if (!dt.is_infinite(c)  && c->info()  < best) { best = c->info();  best_c = c;  }
-            if (!dt.is_infinite(c1) && c1->info() < best) { best = c1->info(); best_c = c1; }
-            info.alpha = best;
-            info.tau = cell_idx(best_c);
-            info.tlen = 4;
+template<std::size_t M>
+bool solve(std::array<std::array<double,M>,M> a, std::array<double,M> b,
+           std::array<double,M>& x) {
+    for(std::size_t k=0; k<M; ++k) {
+        std::size_t pivot=k;
+        for(std::size_t i=k+1; i<M; ++i) if(std::abs(a[i][k]) > std::abs(a[pivot][k])) pivot=i;
+        if(std::abs(a[pivot][k]) <= 64.0 * std::numeric_limits<double>::epsilon()) return false;
+        std::swap(a[k],a[pivot]); std::swap(b[k],b[pivot]);
+        for(std::size_t i=k+1; i<M; ++i) {
+            const double q=a[i][k]/a[k][k];
+            for(std::size_t j=k; j<M; ++j) a[i][j]-=q*a[k][j];
+            b[i]-=q*b[k];
         }
-        facet_info.emplace(key3(vs[0], vs[1], vs[2]), info);
-        add_simplex(vs, info.alpha, std::vector<unsigned>(info.tau.begin(), info.tau.begin() + info.tlen));
     }
-
-    // edges
-    for (auto eit = dt.finite_edges_begin(); eit != dt.finite_edges_end(); ++eit) {
-        typename DT::Edge e = *eit;
-        auto vh0 = e.first->vertex(e.second);
-        auto vh1 = e.first->vertex(e.third);
-        std::array<unsigned, 2> vs{ vh0->info(), vh1->info() };
-        double a;
-        std::vector<unsigned> tau;
-        if (dt.is_Gabriel(e)) {
-            a = sq(vh0->point(), vh1->point());
-            tau = { vs[0], vs[1] };
-        } else {
-            double best = k_inf;
-            FInfo best_info{};
-            typename DT::Facet_circulator fc = dt.incident_facets(e), fdone = fc;
-            do {
-                if (!dt.is_infinite(*fc)) {
-                    auto fv = facet_idx(fc->first, fc->second);
-                    auto it = facet_info.find(key3(fv[0], fv[1], fv[2]));
-                    if (it != facet_info.end() && it->second.alpha < best) {
-                        best = it->second.alpha;
-                        best_info = it->second;
-                    }
-                }
-            } while (++fc != fdone);
-            a = best;
-            tau.assign(best_info.tau.begin(), best_info.tau.begin() + best_info.tlen);
-        }
-        add_simplex(vs, a, tau);
+    for(std::size_t ii=M; ii-- > 0;) {
+        double v=b[ii];
+        for(std::size_t j=ii+1; j<M; ++j) v-=a[ii][j]*x[j];
+        x[ii]=v/a[ii][ii];
     }
-
-    // vertices: alpha 0, attacher = the vertex itself
-    for (auto vit = dt.finite_vertices_begin(); vit != dt.finite_vertices_end(); ++vit)
-        add_simplex(std::array<unsigned, 1>{ vit->info() }, 0.0,
-                    std::vector<unsigned>{ vit->info() });
+    return true;
 }
 
-template<bool exact>
-template<class Points, class SimplexCallback>
-void
-diode::AlphaShapes<exact>::
-fill_alpha_shapes_with_attachment(const Points& points, const SimplexCallback& add_simplex)
-{
-    using K          = detail::Kernel<exact>;
-    using Vb         = CGAL::Alpha_shape_vertex_base_3<K>;
-    using Fb         = CGAL::Alpha_shape_cell_base_3<K>;
-    using TDS        = CGAL::Triangulation_data_structure_3<Vb,Fb>;
-    using Delaunay   = CGAL::Delaunay_triangulation_3<K,TDS,CGAL::Fast_location>;
-
-    using ASWrapper  = detail::AlphaShapeWrapper<Delaunay>;
-    using PointsMap  = typename ASWrapper::PointsMap;
-    using AlphaShape = typename ASWrapper::AlphaShape;
-    using Vertex     = typename ASWrapper::Vertex;
-    using Point      = typename ASWrapper::Point;
-
-    PointsMap points_map;
-    for (Vertex i = 0; i < points.size(); ++i)
-    {
-        Point p(points(i,0), points(i,1), points(i,2));
-        points_map[p] = i;
+template<std::size_t N, std::size_t D>
+double sphere(const std::array<Point<D>,N>& p, const std::array<double,N>& w,
+              Point<D>* center_out=nullptr) {
+    Point<D> center=p[0];
+    if constexpr(N > 1) {
+        constexpr std::size_t M=N-1;
+        std::array<Point<D>,M> v{};
+        std::array<std::array<double,M>,M> gram{};
+        std::array<double,M> rhs{}, coeff{};
+        for(std::size_t i=0; i<M; ++i) {
+            for(std::size_t d=0; d<D; ++d) v[i][d]=p[i+1][d]-p[0][d];
+            double n2=0; for(double z:v[i]) n2+=z*z;
+            rhs[i]=0.5*(n2-w[i+1]+w[0]);
+        }
+        for(std::size_t i=0; i<M; ++i) for(std::size_t j=0; j<M; ++j)
+            for(std::size_t d=0; d<D; ++d) gram[i][j]+=v[i][d]*v[j][d];
+        if(!solve<M>(gram,rhs,coeff)) return std::numeric_limits<double>::infinity();
+        for(std::size_t i=0; i<M; ++i) for(std::size_t d=0; d<D; ++d) center[d]+=coeff[i]*v[i][d];
     }
-
-    auto points_range = points_map | boost::adaptors::map_keys;
-    Delaunay dt(std::begin(points_range), std::end(points_range));
-    ASWrapper::fill_filtration_with_attachment(dt, points_map, add_simplex);
+    if(center_out) *center_out=center;
+    double r=-w[0];
+    for(std::size_t d=0; d<D; ++d) { double q=center[d]-p[0][d]; r+=q*q; }
+    return r;
 }
 
-template<bool exact>
-template<class Points, class SimplexCallback>
-void
-diode::AlphaShapes<exact>::
-fill_weighted_alpha_shapes(const Points& points, const SimplexCallback& add_simplex)
-{
-    using K         = detail::Kernel<exact>;
-
-#if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR <= 9) || (CGAL_VERSION_MAJOR < 4)
-    using Gt        = CGAL::Regular_triangulation_euclidean_traits_3<K>;
-    using Vb        = CGAL::Alpha_shape_vertex_base_3<Gt>;
-    using Fb        = CGAL::Alpha_shape_cell_base_3<Gt>;
-    using TDS       = CGAL::Triangulation_data_structure_3<Vb,Fb>;
-    using Delaunay  = CGAL::Regular_triangulation_3<Gt,TDS>;
-#else
-    using Rvb       = CGAL::Regular_triangulation_vertex_base_3<K>;
-    using Vb        = CGAL::Alpha_shape_vertex_base_3<K, Rvb>;
-    using Rcb       = CGAL::Regular_triangulation_cell_base_3<K>;
-    using Cb        = CGAL::Alpha_shape_cell_base_3<K, Rcb>;
-    using TDS       = CGAL::Triangulation_data_structure_3<Vb,Cb>;
-    using Delaunay  = CGAL::Regular_triangulation_3<K,TDS>;
-#endif
-
-    using ASWrapper     = detail::AlphaShapeWrapper<Delaunay, typename Delaunay::Weighted_point>;
-    using PointsMap     = typename ASWrapper::PointsMap;
-    using AlphaShape    = typename ASWrapper::AlphaShape;
-    using Vertex        = typename ASWrapper::Vertex;
-    using Point         = typename ASWrapper::Point;
-
-    PointsMap points_map;
-    for (Vertex i = 0; i < points.size(); ++i)
-    {
-        Point p({points(i,0), points(i,1), points(i,2)}, points(i,3));
-        points_map[p] = i;
+template<std::size_t N, std::size_t D>
+void own_alpha(Record<N,D>& r) {
+    Point<D> center{};
+    const double radius=sphere(r.points,r.weights,&center);
+    bool gabriel=std::isfinite(radius);
+    const double tol=128.0*std::numeric_limits<double>::epsilon()*std::max(1.0,std::abs(radius));
+    for(const auto& witness:r.witnesses) {
+        double power=-witness.second;
+        for(std::size_t d=0; d<D; ++d) { double q=center[d]-witness.first[d]; power+=q*q; }
+        if(power < radius-tol) { gabriel=false; break; }
     }
-
-    auto points_range = points_map | boost::adaptors::map_keys;
-    Delaunay dt(std::begin(points_range), std::end(points_range));
-    ASWrapper::fill_filtration(dt, points_map, add_simplex);
+    if(gabriel) { r.alpha=radius; r.tau.assign(r.key.vertices.begin(),r.key.vertices.end()); }
 }
 
-template<bool exact>
-template<class Points, class SimplexCallback>
-void
-diode::AlphaShapes<exact>::
-fill_weighted_alpha_shapes_direct(const Points& points, const SimplexCallback& add_simplex)
-{
-    using K     = detail::Kernel<exact>;
-    using Vb0   = CGAL::Regular_triangulation_vertex_base_3<K>;
-    using Vb    = CGAL::Triangulation_vertex_base_with_info_3<unsigned, K, Vb0>;
-    using Cb0   = CGAL::Regular_triangulation_cell_base_3<K>;
-    using Cb    = CGAL::Triangulation_cell_base_with_info_3<double, K, Cb0>;
-    using TDS   = CGAL::Triangulation_data_structure_3<Vb, Cb>;
-    using RT    = CGAL::Regular_triangulation_3<K, TDS>;
-    using Weighted_point = typename RT::Weighted_point;
-    using Bare_point     = typename RT::Bare_point;
+template<std::size_t N, std::size_t D>
+void take_coface(Record<N,D>& r, double alpha, const std::vector<unsigned>& tau) {
+    if(alpha < r.alpha) { r.alpha=alpha; r.tau=tau; }
+}
 
-    // Bulk-insert weighted points carrying their original index in vertex info, so
-    // vertex->info() is an O(1) lookup. Redundant points are hidden by the regular
-    // triangulation (no vertex), so they are simply absent from the output.
-    RT rt;
-    {
-        std::vector<std::pair<Weighted_point, unsigned>> wpts;
-        wpts.reserve(points.size());
-        for (unsigned i = 0; i < points.size(); ++i)
-            wpts.emplace_back(Weighted_point(Bare_point(points(i, 0), points(i, 1), points(i, 2)),
-                                             points(i, 3)), i);
-        rt.insert(wpts.begin(), wpts.end());
-    }
-
-    // Degenerate input (< 3D): defer to the reference (see fill_alpha_shapes_direct).
-    if (rt.dimension() < 3) {
-        fill_weighted_alpha_shapes(points, add_simplex);
-        return;
-    }
-    detail::relabel_duplicates_last_wins(rt, points, [&](unsigned i) {
-        return Weighted_point(Bare_point(points(i, 0), points(i, 1), points(i, 2)), points(i, 3)); });
-
-    // squared radius of the smallest orthogonal sphere through weighted vertices:
-    // 4 args -> cell, 3 -> facet, 2 -> edge, 1 -> vertex (returns -weight). Respects
-    // `exact` via to_floating_point (identity for EPICK).
-    auto cr = K().compute_squared_radius_smallest_orthogonal_sphere_3_object();
-    auto sq = [&](auto&&... wps) { return detail::to_floating_point(cr(wps...)); };
-
-    struct Key3 {
-        unsigned a, b, c;
-        bool operator==(const Key3& o) const { return a == o.a && b == o.b && c == o.c; }
-    };
-    struct Key3Hash {
-        std::size_t operator()(const Key3& k) const
-        { std::size_t h = k.a; h = h * 1000003u ^ k.b; h = h * 1000003u ^ k.c; return h; }
-    };
-    auto key3 = [](unsigned a, unsigned b, unsigned c) {
-        if (a > b) std::swap(a, b);
-        if (b > c) std::swap(b, c);
-        if (a > b) std::swap(a, b);
-        return Key3{a, b, c};
-    };
-    struct Key2 {
-        unsigned a, b;
-        bool operator==(const Key2& o) const { return a == o.a && b == o.b; }
-    };
-    struct Key2Hash {
-        std::size_t operator()(const Key2& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; return h; }
-    };
-    auto key2 = [](unsigned a, unsigned b) { if (a > b) std::swap(a, b); return Key2{a, b}; };
-    auto facet_idx = [](typename RT::Cell_handle c, int i) {
-        return std::array<unsigned, 3>{ c->vertex((i + 1) & 3)->info(),
-                                        c->vertex((i + 2) & 3)->info(),
-                                        c->vertex((i + 3) & 3)->info() };
-    };
-
-    // dim 3 (tetrahedra): alpha = weighted squared circumradius; stash for facets
-    for (auto cit = rt.finite_cells_begin(); cit != rt.finite_cells_end(); ++cit) {
-        double a = sq(cit->vertex(0)->point(), cit->vertex(1)->point(),
-                      cit->vertex(2)->point(), cit->vertex(3)->point());
-        cit->info() = a;
-        add_simplex(std::array<unsigned, 4>{ cit->vertex(0)->info(), cit->vertex(1)->info(),
-                                             cit->vertex(2)->info(), cit->vertex(3)->info() }, a);
-    }
-
-    // dim 2 (facets): Gabriel ? own : min over the <=2 incident cells
-    std::unordered_map<Key3, double, Key3Hash> facet_alpha;
-    facet_alpha.reserve(rt.number_of_finite_facets());
-    for (auto fit = rt.finite_facets_begin(); fit != rt.finite_facets_end(); ++fit) {
-        typename RT::Facet f = *fit;
-        typename RT::Cell_handle c = f.first;
-        int i = f.second;
-        auto vs = facet_idx(c, i);
-        double a;
-        if (rt.is_Gabriel(f)) {
-            a = sq(c->vertex((i + 1) & 3)->point(), c->vertex((i + 2) & 3)->point(),
-                   c->vertex((i + 3) & 3)->point());
-        } else {
-            typename RT::Cell_handle c1 = c->neighbor(i);
-            double best = std::numeric_limits<double>::infinity();
-            if (!rt.is_infinite(c))  best = std::min(best, c->info());
-            if (!rt.is_infinite(c1)) best = std::min(best, c1->info());
-            a = best;
+template<class Points, std::size_t D>
+std::vector<Vertex<D>> unique_points(const Points& points, bool weighted=false,
+                                     const Point<D>* from=nullptr) {
+    std::map<Point<D>,unsigned> last;
+    for(unsigned i=0; i<points.size(); ++i) {
+        Point<D> p{};
+        for(std::size_t d=0; d<D; ++d) {
+            p[d]=static_cast<double>(points(i,d));
+            if(!std::isfinite(p[d])) throw std::runtime_error("points must be finite");
         }
-        facet_alpha.emplace(key3(vs[0], vs[1], vs[2]), a);
-        add_simplex(vs, a);
+        last[p]=i;
     }
-
-    // dim 1 (edges): Gabriel ? own : min over incident facets; stash for vertices
-    std::unordered_map<Key2, double, Key2Hash> edge_alpha;
-    for (auto eit = rt.finite_edges_begin(); eit != rt.finite_edges_end(); ++eit) {
-        typename RT::Edge e = *eit;
-        auto vh0 = e.first->vertex(e.second);
-        auto vh1 = e.first->vertex(e.third);
-        std::array<unsigned, 2> vs{ vh0->info(), vh1->info() };
-        double a;
-        if (rt.is_Gabriel(e)) {
-            a = sq(vh0->point(), vh1->point());
-        } else {
-            double best = std::numeric_limits<double>::infinity();
-            typename RT::Facet_circulator fc = rt.incident_facets(e), fdone = fc;
-            do {
-                if (!rt.is_infinite(*fc)) {
-                    auto fv = facet_idx(fc->first, fc->second);
-                    auto it = facet_alpha.find(key3(fv[0], fv[1], fv[2]));
-                    if (it != facet_alpha.end()) best = std::min(best, it->second);
-                }
-            } while (++fc != fdone);
-            a = best;
+    std::vector<Vertex<D>> result;
+    result.reserve(last.size());
+    for(const auto& item:last) {
+        Vertex<D> v; v.id=item.second; v.point=item.first;
+        if(from) for(std::size_t d=0; d<D; ++d) v.point[d]-=(*from)[d];
+        if(weighted) {
+            v.weight=static_cast<double>(points(item.second,D));
+            if(!std::isfinite(v.weight)) throw std::runtime_error("weights must be finite");
         }
-        edge_alpha.emplace(key2(vs[0], vs[1]), a);
-        add_simplex(vs, a);
+        result.push_back(v);
     }
+    return result;
+}
 
-    // dim 0 (vertices): unlike the unweighted case, a weighted vertex need not be
-    // Gabriel -- its own smallest orthogonal sphere (squared radius -weight) may be
-    // non-empty. Gabriel ? -weight : min over incident edges.
-    std::vector<typename RT::Edge> inc_edges;
-    for (auto vit = rt.finite_vertices_begin(); vit != rt.finite_vertices_end(); ++vit) {
-        double a;
-        if (rt.is_Gabriel(vit)) {
-            a = sq(vit->point());
-        } else {
-            double best = std::numeric_limits<double>::infinity();
-            inc_edges.clear();
-            rt.finite_incident_edges(vit, std::back_inserter(inc_edges));
-            for (const auto& e : inc_edges) {
-                auto it = edge_alpha.find(key2(e.first->vertex(e.second)->info(),
-                                               e.first->vertex(e.third)->info()));
-                if (it != edge_alpha.end()) best = std::min(best, it->second);
+template<std::size_t D> struct Complex;
+template<> struct Complex<2> {
+    std::map<LiftKey<1,2>,Record<1,2>> v;
+    std::map<LiftKey<2,2>,Record<2,2>> e;
+    std::map<LiftKey<3,2>,Record<3,2>> f;
+    std::vector<std::pair<LiftKey<1,2>,LiftKey<2,2>>> ve;
+    std::vector<std::pair<LiftKey<2,2>,LiftKey<3,2>>> ef;
+};
+template<> struct Complex<3> {
+    std::map<LiftKey<1,3>,Record<1,3>> v;
+    std::map<LiftKey<2,3>,Record<2,3>> e;
+    std::map<LiftKey<3,3>,Record<3,3>> f;
+    std::map<LiftKey<4,3>,Record<4,3>> c;
+    std::vector<std::pair<LiftKey<1,3>,LiftKey<2,3>>> ve;
+    std::vector<std::pair<LiftKey<2,3>,LiftKey<3,3>>> ef;
+    std::vector<std::pair<LiftKey<3,3>,LiftKey<4,3>>> fc;
+};
+
+inline void add_triangle(Complex<2>& out, const std::array<Vertex<2>,3>& cell) {
+    auto& face=add_record(out.f,cell);
+    for(int skip=0; skip<3; ++skip) {
+        std::array<Vertex<2>,2> edge{cell[(skip+1)%3],cell[(skip+2)%3]};
+        auto& er=add_record(out.e,edge);
+        er.witnesses.emplace_back(cell[skip].point,cell[skip].weight);
+        out.ef.emplace_back(er.key,face.key);
+        for(int i=0;i<2;++i) {
+            std::array<Vertex<2>,1> one{edge[i]}; auto& vr=add_record(out.v,one);
+            vr.witnesses.emplace_back(edge[1-i].point,edge[1-i].weight);
+            out.ve.emplace_back(vr.key,er.key);
+        }
+    }
+}
+
+inline void add_triangle(Complex<3>& out, const std::array<Vertex<3>,3>& cell) {
+    auto& face=add_record(out.f,cell);
+    for(int skip=0; skip<3; ++skip) {
+        std::array<Vertex<3>,2> edge{cell[(skip+1)%3],cell[(skip+2)%3]};
+        auto& er=add_record(out.e,edge);
+        out.ef.emplace_back(er.key,face.key);
+        for(int i=0;i<2;++i) {
+            std::array<Vertex<3>,1> one{edge[i]};
+            auto& vr=add_record(out.v,one);
+            out.ve.emplace_back(vr.key,er.key);
+        }
+    }
+}
+
+inline Complex<3> lower_dimensional_complex(std::vector<Vertex<3>> vertices) {
+    Complex<3> out;
+    if(vertices.empty()) return out;
+    for(const auto& vertex:vertices) add_record(out.v,std::array<Vertex<3>,1>{vertex});
+    const auto origin=vertices.front().point;
+    Point<3> axis{};
+    double axis_norm=0.0;
+    for(const auto& vertex:vertices) {
+        Point<3> delta{};
+        double n=0.0;
+        for(int d=0;d<3;++d) { delta[d]=vertex.point[d]-origin[d]; n+=delta[d]*delta[d]; }
+        if(n>axis_norm) { axis_norm=n; axis=delta; }
+    }
+    if(axis_norm==0.0) return out;
+    for(double& x:axis) x/=std::sqrt(axis_norm);
+    Point<3> second{};
+    double second_norm=0.0;
+    for(const auto& vertex:vertices) {
+        Point<3> delta{};
+        double projection=0.0;
+        for(int d=0;d<3;++d) { delta[d]=vertex.point[d]-origin[d]; projection+=delta[d]*axis[d]; }
+        double n=0.0;
+        for(int d=0;d<3;++d) { delta[d]-=projection*axis[d]; n+=delta[d]*delta[d]; }
+        if(n>second_norm) { second_norm=n; second=delta; }
+    }
+    const double tolerance=1024.0*std::numeric_limits<double>::epsilon()*std::max(1.0,axis_norm);
+    if(second_norm<=tolerance) {
+        std::sort(vertices.begin(),vertices.end(),[&](const auto& a,const auto& b) {
+            double pa=0.0,pb=0.0;
+            for(int d=0;d<3;++d) { pa+=(a.point[d]-origin[d])*axis[d]; pb+=(b.point[d]-origin[d])*axis[d]; }
+            return pa<pb;
+        });
+        for(std::size_t i=1;i<vertices.size();++i) {
+            auto& er=add_record(out.e,std::array<Vertex<3>,2>{vertices[i-1],vertices[i]});
+            for(int j=0;j<2;++j) {
+                auto& vr=add_record(out.v,std::array<Vertex<3>,1>{vertices[i-1+j]});
+                out.ve.emplace_back(vr.key,er.key);
             }
-            a = best;
         }
-        add_simplex(std::array<unsigned, 1>{ vit->info() }, a);
+        return out;
     }
-}
-
-template<bool exact>
-template<class Points, class SimplexCallback>
-void
-diode::AlphaShapes<exact>::
-fill_periodic_alpha_shapes(const Points& points, const SimplexCallback& add_simplex,
-                           std::array<double, 3> from, std::array<double, 3> to)
-{
-    using K          = detail::Kernel<exact>;
-    using PK         = CGAL::Periodic_3_Delaunay_triangulation_traits_3<K>;
-
-    using DsVb       = CGAL::Periodic_3_triangulation_ds_vertex_base_3<>;
-    using Vb         = CGAL::Triangulation_vertex_base_3<PK,DsVb>;
-    using AsVb       = CGAL::Alpha_shape_vertex_base_3<PK,Vb>;
-    using DsCb       = CGAL::Periodic_3_triangulation_ds_cell_base_3<>;
-    using Cb         = CGAL::Triangulation_cell_base_3<PK,DsCb>;
-    using AsCb       = CGAL::Alpha_shape_cell_base_3<PK,Cb>;
-    using TDS        = CGAL::Triangulation_data_structure_3<AsVb,AsCb>;
-    using Delaunay   = CGAL::Periodic_3_Delaunay_triangulation_3<PK,TDS>;
-
-    using ASWrapper  = detail::AlphaShapeWrapper<Delaunay>;
-    using PointsMap  = typename ASWrapper::PointsMap;
-    using AlphaShape = typename ASWrapper::AlphaShape;
-    using Vertex     = typename ASWrapper::Vertex;
-    using Point      = typename ASWrapper::Point;
-
-    PointsMap points_map;
-    for (Vertex i = 0; i < points.size(); ++i)
-    {
-        Point p(points(i,0), points(i,1), points(i,2));
-        points_map[p] = i;
-    }
-
-    Delaunay pdt(typename PK::Iso_cuboid_3(from[0], from[1], from[2], to[0], to[1], to[2]));
-    auto points_range = points_map | boost::adaptors::map_keys;
-    pdt.insert(std::begin(points_range), std::end(points_range), true);
-    if (pdt.is_triangulation_in_1_sheet())
-        pdt.convert_to_1_sheeted_covering();
-    else
-        throw std::runtime_error("Cannot convert to 1-sheeted covering");
-    ASWrapper::fill_filtration(pdt, points_map, add_simplex);
-}
-
-template<bool exact>
-template<class Points, class SimplexCallback>
-void
-diode::AlphaShapes<exact>::
-fill_periodic_alpha_shapes_direct(const Points& points, const SimplexCallback& add_simplex,
-                                  std::array<double, 3> from, std::array<double, 3> to)
-{
-    using K      = detail::Kernel<exact>;
-    using PK     = CGAL::Periodic_3_Delaunay_triangulation_traits_3<K>;
-    using DsVb   = CGAL::Periodic_3_triangulation_ds_vertex_base_3<>;
-    using Vb     = CGAL::Triangulation_vertex_base_3<PK, DsVb>;
-    using VbInfo = CGAL::Triangulation_vertex_base_with_info_3<unsigned, PK, Vb>;
-    using DsCb   = CGAL::Periodic_3_triangulation_ds_cell_base_3<>;
-    using Cb     = CGAL::Triangulation_cell_base_3<PK, DsCb>;
-    using CbInfo = CGAL::Triangulation_cell_base_with_info_3<double, PK, Cb>;
-    using TDS    = CGAL::Triangulation_data_structure_3<VbInfo, CbInfo>;
-    using PDT    = CGAL::Periodic_3_Delaunay_triangulation_3<PK, TDS>;
-    using Point         = typename PDT::Point;
-    using Vertex_handle = typename PDT::Vertex_handle;
-    using Cell_handle   = typename PDT::Cell_handle;
-
-    // Insert one at a time so we can stash the input index in the vertex info.
-    PDT pdt(typename PK::Iso_cuboid_3(from[0], from[1], from[2], to[0], to[1], to[2]));
-    for (unsigned i = 0; i < points.size(); ++i) {
-        Vertex_handle vh = pdt.insert(Point(points(i, 0), points(i, 1), points(i, 2)));
-        if (vh != Vertex_handle())
-            vh->info() = i;
-    }
-    if (pdt.is_triangulation_in_1_sheet())
-        pdt.convert_to_1_sheeted_covering();
-    else
-        throw std::runtime_error("Cannot convert to 1-sheeted covering");
-
-    // Offset-corrected squared circumradius (pdt.point applies the cell's offset).
-    auto sq = [](auto&&... ps) { return detail::to_floating_point(CGAL::squared_radius(ps...)); };
-
-    // Periodic CGAL reports a canonical simplex once per offset; dedup by
-    // vertex-index set, keeping the smallest alpha across the offset copies.
-    struct Key4 { unsigned a, b, c, d; bool operator==(const Key4& o) const { return a == o.a && b == o.b && c == o.c && d == o.d; } };
-    struct Key4Hash { std::size_t operator()(const Key4& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; h = h * 1000003u ^ k.c; h = h * 1000003u ^ k.d; return h; } };
-    auto key4 = [](unsigned a, unsigned b, unsigned c, unsigned d) { unsigned v[4] = { a, b, c, d }; std::sort(v, v + 4); return Key4{ v[0], v[1], v[2], v[3] }; };
-    struct Key3 { unsigned a, b, c; bool operator==(const Key3& o) const { return a == o.a && b == o.b && c == o.c; } };
-    struct Key3Hash { std::size_t operator()(const Key3& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; h = h * 1000003u ^ k.c; return h; } };
-    auto key3 = [](unsigned a, unsigned b, unsigned c) { if (a > b) std::swap(a, b); if (b > c) std::swap(b, c); if (a > b) std::swap(a, b); return Key3{a, b, c}; };
-    struct Key2 { unsigned a, b; bool operator==(const Key2& o) const { return a == o.a && b == o.b; } };
-    struct Key2Hash { std::size_t operator()(const Key2& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; return h; } };
-    auto key2 = [](unsigned a, unsigned b) { if (a > b) std::swap(a, b); return Key2{a, b}; };
-
-    auto relax_min = [](auto& map, const auto& k, double a) {
-        auto it = map.find(k);
-        if (it == map.end()) map.emplace(k, a);
-        else it->second = std::min(it->second, a);
-    };
-
-    // dim 3 (tetrahedra): alpha = squared circumradius; stash on cell info for facets
-    std::unordered_map<Key4, double, Key4Hash> cell_alpha;
-    for (auto cit = pdt.cells_begin(); cit != pdt.cells_end(); ++cit) {
-        double a = sq(pdt.point(cit, 0), pdt.point(cit, 1), pdt.point(cit, 2), pdt.point(cit, 3));
-        cit->info() = a;
-        relax_min(cell_alpha, key4(cit->vertex(0)->info(), cit->vertex(1)->info(),
-                                   cit->vertex(2)->info(), cit->vertex(3)->info()), a);
-    }
-
-    // dim 2 (facets): Gabriel ? own circumradius : min over the two incident cells
-    // (periodic triangulations have no infinite cells)
-    std::unordered_map<Key3, double, Key3Hash> facet_alpha;
-    for (auto fit = pdt.facets_begin(); fit != pdt.facets_end(); ++fit) {
-        typename PDT::Facet f = *fit;
-        Cell_handle c = f.first;
-        int i = f.second;
-        double a;
-        if (pdt.is_Gabriel(f))
-            a = sq(pdt.point(c, (i + 1) & 3), pdt.point(c, (i + 2) & 3), pdt.point(c, (i + 3) & 3));
-        else
-            a = std::min(c->info(), c->neighbor(i)->info());
-        relax_min(facet_alpha, key3(c->vertex((i + 1) & 3)->info(), c->vertex((i + 2) & 3)->info(),
-                                    c->vertex((i + 3) & 3)->info()), a);
-    }
-
-    // dim 1 (edges): Gabriel ? own circumradius : min over incident facets
-    std::unordered_map<Key2, double, Key2Hash> edge_alpha;
-    for (auto eit = pdt.edges_begin(); eit != pdt.edges_end(); ++eit) {
-        typename PDT::Edge e = *eit;
-        Cell_handle c = e.first;
-        int i = e.second, j = e.third;
-        double a;
-        if (pdt.is_Gabriel(e)) {
-            a = sq(pdt.point(c, i), pdt.point(c, j));
-        } else {
-            double best = std::numeric_limits<double>::infinity();
-            typename PDT::Facet_circulator fc = pdt.incident_facets(e), fdone = fc;
-            do {
-                Cell_handle fcc = fc->first;
-                int fi = fc->second;
-                auto it = facet_alpha.find(key3(fcc->vertex((fi + 1) & 3)->info(),
-                                                fcc->vertex((fi + 2) & 3)->info(),
-                                                fcc->vertex((fi + 3) & 3)->info()));
-                if (it != facet_alpha.end()) best = std::min(best, it->second);
-            } while (++fc != fdone);
-            a = best;
+    for(double& x:second) x/=std::sqrt(second_norm);
+    std::vector<double> coordinates;
+    coordinates.reserve(vertices.size()*2);
+    for(const auto& vertex:vertices) {
+        double x=0.0,y=0.0;
+        for(int d=0;d<3;++d) {
+            const double q=vertex.point[d]-origin[d];
+            x+=q*axis[d]; y+=q*second[d];
         }
-        relax_min(edge_alpha, key2(c->vertex(i)->info(), c->vertex(j)->info()), a);
+        coordinates.push_back(x); coordinates.push_back(y);
     }
+    GEO::SmartPointer<GEO::Delaunay2d> dt=new GEO::Delaunay2d();
+    dt->set_reorder(false);
+    dt->set_vertices(vertices.size(),coordinates.data());
+    for(GEO::index_t c=0;c<dt->nb_cells();++c) {
+        std::array<Vertex<3>,3> cell;
+        for(int i=0;i<3;++i) cell[i]=vertices[dt->cell_vertex(c,i)];
+        add_triangle(out,cell);
+    }
+    return out;
+}
 
-    for (const auto& kv : cell_alpha)
-        add_simplex(std::array<unsigned, 4>{ kv.first.a, kv.first.b, kv.first.c, kv.first.d }, kv.second);
-    for (const auto& kv : facet_alpha)
-        add_simplex(std::array<unsigned, 3>{ kv.first.a, kv.first.b, kv.first.c }, kv.second);
-    for (const auto& kv : edge_alpha)
-        add_simplex(std::array<unsigned, 2>{ kv.first.a, kv.first.b }, kv.second);
+inline bool spans_three_dimensions(const std::vector<Vertex<3>>& vertices) {
+    if(vertices.size()<4) return false;
+    const auto origin=vertices.front().point;
+    Point<3> first{};
+    double first_norm=0.0;
+    for(const auto& vertex:vertices) {
+        Point<3> q{}; double n=0.0;
+        for(int d=0;d<3;++d) { q[d]=vertex.point[d]-origin[d]; n+=q[d]*q[d]; }
+        if(n>first_norm) { first_norm=n; first=q; }
+    }
+    Point<3> normal{};
+    double normal_norm=0.0;
+    for(const auto& vertex:vertices) {
+        Point<3> q{};
+        for(int d=0;d<3;++d) q[d]=vertex.point[d]-origin[d];
+        Point<3> n{
+            first[1]*q[2]-first[2]*q[1],
+            first[2]*q[0]-first[0]*q[2],
+            first[0]*q[1]-first[1]*q[0]
+        };
+        double n2=0.0; for(double value:n) n2+=value*value;
+        if(n2>normal_norm) { normal_norm=n2; normal=n; }
+    }
+    if(normal_norm==0.0) return false;
+    double height=0.0;
+    for(const auto& vertex:vertices) {
+        double value=0.0;
+        for(int d=0;d<3;++d) value+=(vertex.point[d]-origin[d])*normal[d];
+        height=std::max(height,std::abs(value));
+    }
+    const double scale=std::max(1.0,std::sqrt(first_norm*normal_norm));
+    return height>1024.0*std::numeric_limits<double>::epsilon()*scale;
+}
 
-    // dim 0 (vertices): alpha 0; one canonical vertex per input point
-    std::vector<char> seen_v(points.size(), 0);
-    for (auto vit = pdt.vertices_begin(); vit != pdt.vertices_end(); ++vit) {
-        unsigned idx = vit->info();
-        if (idx < seen_v.size() && !seen_v[idx]) { seen_v[idx] = 1; add_simplex(std::array<unsigned, 1>{ idx }, 0.0); }
+inline void add_tetrahedron(Complex<3>& out, const std::array<Vertex<3>,4>& cell) {
+    auto& cr=add_record(out.c,cell);
+    for(int omit=0; omit<4; ++omit) {
+        std::array<Vertex<3>,3> face{}; int k=0;
+        for(int i=0;i<4;++i) if(i!=omit) face[k++]=cell[i];
+        auto& fr=add_record(out.f,face);
+        fr.witnesses.emplace_back(cell[omit].point,cell[omit].weight);
+        out.fc.emplace_back(fr.key,cr.key);
+        for(int a=0;a<3;++a) for(int b=a+1;b<3;++b) {
+            std::array<Vertex<3>,2> edge{face[a],face[b]}; auto& er=add_record(out.e,edge);
+            er.witnesses.emplace_back(face[3-a-b].point,face[3-a-b].weight);
+            out.ef.emplace_back(er.key,fr.key);
+            for(int i=0;i<2;++i) {
+                std::array<Vertex<3>,1> one{edge[i]}; auto& vr=add_record(out.v,one);
+                vr.witnesses.emplace_back(edge[1-i].point,edge[1-i].weight);
+                out.ve.emplace_back(vr.key,er.key);
+            }
+        }
     }
 }
 
-template<bool exact>
+inline void compute_alpha(Complex<2>& x) {
+    for(auto& p:x.f) own_alpha(p.second);
+    for(auto& p:x.e) own_alpha(p.second);
+    for(const auto& r:x.ef) take_coface(x.e.at(r.first),x.f.at(r.second).alpha,x.f.at(r.second).tau);
+    for(auto& p:x.v) own_alpha(p.second);
+    for(const auto& r:x.ve) take_coface(x.v.at(r.first),x.e.at(r.second).alpha,x.e.at(r.second).tau);
+}
+inline void compute_alpha(Complex<3>& x) {
+    for(auto& p:x.c) own_alpha(p.second);
+    for(auto& p:x.f) own_alpha(p.second);
+    for(const auto& r:x.fc) take_coface(x.f.at(r.first),x.c.at(r.second).alpha,x.c.at(r.second).tau);
+    for(auto& p:x.e) own_alpha(p.second);
+    for(const auto& r:x.ef) take_coface(x.e.at(r.first),x.f.at(r.second).alpha,x.f.at(r.second).tau);
+    for(auto& p:x.v) own_alpha(p.second);
+    for(const auto& r:x.ve) take_coface(x.v.at(r.first),x.e.at(r.second).alpha,x.e.at(r.second).tau);
+}
+
 template<class Points>
-std::array<typename Points::Real, 3>
-diode::AlphaShapes<exact>::
-circumcenter(const Points& points)
-{
-    using K          = detail::Kernel<exact>;
-    using Point      = CGAL::Point_3<K>;
-    using Real       = typename Points::Real;
-
-    Point p_0(points(0,0), points(0,1), points(0,2));
-    Point p_1(points(1,0), points(1,1), points(1,2));
-    Point p_2(points(2,0), points(2,1), points(2,2));
-
-    Point center;
-
-    if (points.size() == 3)
-        center = CGAL::circumcenter(p_0,p_1,p_2);
-    else     // points.size() == 4
-    {
-        Point p_3(points(3,0), points(3,1), points(3,2));
-        center = CGAL::circumcenter(p_0,p_1,p_2,p_3);
+Complex<2> triangulate2(const Points& points, bool periodic=false,
+                        Point<2> from={0,0}, Point<2> to={1,1}) {
+    initialize_geogram();
+    auto base=unique_points<Points,2>(points,false,periodic?&from:nullptr);
+    std::vector<Vertex<2>> vertices;
+    if(periodic) {
+        vertices.reserve(base.size()*9);
+        for(int ox=-1;ox<=1;++ox) for(int oy=-1;oy<=1;++oy) for(auto v:base) {
+            v.offset={ox,oy}; v.point[0]+=ox*(to[0]-from[0]); v.point[1]+=oy*(to[1]-from[1]); vertices.push_back(v);
+        }
+    } else vertices=base;
+    Complex<2> out;
+    if(base.size()<3) return out;
+    std::vector<double> coords; coords.reserve(vertices.size()*2);
+    for(const auto& v:vertices) { coords.push_back(v.point[0]); coords.push_back(v.point[1]); }
+    GEO::SmartPointer<GEO::Delaunay2d> dt=new GEO::Delaunay2d();
+    dt->set_reorder(false);
+    dt->set_vertices(vertices.size(),coords.data());
+    for(GEO::index_t c=0;c<dt->nb_cells();++c) {
+        std::array<Vertex<2>,3> cell;
+        for(int i=0;i<3;++i) cell[i]=vertices[dt->cell_vertex(c,i)];
+        if(periodic) {
+            std::array<Point<2>,3> p{cell[0].point,cell[1].point,cell[2].point};
+            std::array<double,3> w{}; Point<2> center{}; sphere(p,w,&center);
+            const double tolerance_x=1024.0*std::numeric_limits<double>::epsilon()*
+                std::max(1.0,to[0]-from[0]);
+            const double tolerance_y=1024.0*std::numeric_limits<double>::epsilon()*
+                std::max(1.0,to[1]-from[1]);
+            if(center[0]<-tolerance_x || center[0]>to[0]-from[0]+tolerance_x ||
+               center[1]<-tolerance_y || center[1]>to[1]-from[1]+tolerance_y) continue;
+        }
+        add_triangle(out,cell);
     }
-
-    return std::array<Real, 3> { Real(CGAL::to_double(center[0])),
-                                 Real(CGAL::to_double(center[1])),
-                                 Real(CGAL::to_double(center[2])) };
+    return out;
+}
+inline std::mutex& triangulation3_mutex() {
+    static std::mutex mutex;
+    return mutex;
 }
 
-#if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
-template<bool exact>
-template<class Points, class SimplexCallback>
-void
-diode::AlphaShapes<exact>::
-fill_weighted_periodic_alpha_shapes(const Points& points, const SimplexCallback& add_simplex,
-                                           std::array<double, 3> from, std::array<double, 3> to)
-{
-    using K          = detail::Kernel<exact>;
-    using PK         = CGAL::Periodic_3_regular_triangulation_traits_3<K>;
 
-    using DsVb       = CGAL::Periodic_3_triangulation_ds_vertex_base_3<>;
-    using Vb         = CGAL::Regular_triangulation_vertex_base_3<PK,DsVb>;
-    using AsVb       = CGAL::Alpha_shape_vertex_base_3<PK,Vb>;
-    using DsCb       = CGAL::Periodic_3_triangulation_ds_cell_base_3<>;
-    using Cb         = CGAL::Regular_triangulation_cell_base_3<PK,DsCb>;
-    using AsCb       = CGAL::Alpha_shape_cell_base_3<PK,Cb>;
-    using TDS        = CGAL::Triangulation_data_structure_3<AsVb,AsCb>;
-    using Delaunay   = CGAL::Periodic_3_regular_triangulation_3<PK,TDS>;
-
-    using ASWrapper  = detail::AlphaShapeWrapper<Delaunay>;
-    using PointsMap  = typename ASWrapper::PointsMap;
-    using AlphaShape = typename ASWrapper::AlphaShape;
-    using Vertex     = typename ASWrapper::Vertex;
-    using Point      = typename ASWrapper::Point;
-    using FT         = typename ASWrapper::FT;
-
-    auto domain_size = to[0] - from[0];
-    auto upper_bound = FT(0.015625) * domain_size * domain_size;
-
-    PointsMap points_map;
-    for (Vertex i = 0; i < points.size(); ++i)
-    {
-        auto x = points(i,0);
-        auto y = points(i,1);
-        auto z = points(i,2);
-        auto w = points(i,3);
-        if (w < 0 || w >= upper_bound)
-        {
-            std::ostringstream oss;
-            oss << "Point weight w must satisfy: 0 <= w < 1/64 * domain_size * domain_size; but got point"
-                << " (" << x << ", " << y << ", " << z << ") weight = " << w;
-            throw std::runtime_error(oss.str());
+inline Complex<3> triangulate3_regular(
+    const std::vector<Vertex<3>>& vertices, bool weighted,
+    const Point<3>* periodic_extent=nullptr
+) {
+    std::lock_guard<std::mutex> lock(triangulation3_mutex());
+    GEO::Numeric::random_reset();
+    Complex<3> out;
+    std::vector<double> coordinates;
+    coordinates.reserve(vertices.size()*(weighted ? 4 : 3));
+    double max_weight=0.0;
+    if(weighted) {
+        max_weight=vertices.front().weight;
+        for(const auto& vertex:vertices) max_weight=std::max(max_weight,vertex.weight);
+    }
+    for(const auto& vertex:vertices) {
+        for(double x:vertex.point) coordinates.push_back(x);
+        if(weighted) coordinates.push_back(std::sqrt(std::max(0.0,max_weight-vertex.weight)));
+    }
+    GEO::SmartPointer<GEO::Delaunay> dt = weighted
+        ? static_cast<GEO::Delaunay*>(new GEO::RegularWeightedDelaunay3d())
+        : static_cast<GEO::Delaunay*>(new GEO::Delaunay3d());
+    dt->set_reorder(false);
+    dt->set_vertices(vertices.size(),coordinates.data());
+    for(GEO::index_t c=0;c<dt->nb_cells();++c) {
+        std::array<Vertex<3>,4> cell;
+        bool repeated=false;
+        for(int i=0;i<4;++i) {
+            cell[i]=vertices[dt->cell_vertex(c,i)];
+            for(int j=0;j<i;++j) if(cell[j].id==cell[i].id) repeated=true;
         }
-
-        Point p({x,y,z}, w);
-        points_map[p] = i;
-    }
-
-    Delaunay pdt(typename PK::Iso_cuboid_3(from[0], from[1], from[2], to[0], to[1], to[2]));
-    auto points_range = points_map | boost::adaptors::map_keys;
-    pdt.insert(std::begin(points_range), std::end(points_range), true);
-    if (pdt.is_triangulation_in_1_sheet())
-        pdt.convert_to_1_sheeted_covering();
-    else
-        throw std::runtime_error("Cannot convert to 1-sheeted covering");
-    ASWrapper::fill_filtration(pdt, points_map, add_simplex);
-}
-
-template<bool exact>
-template<class Points, class SimplexCallback>
-void
-diode::AlphaShapes<exact>::
-fill_weighted_periodic_alpha_shapes_direct(const Points& points, const SimplexCallback& add_simplex,
-                                           std::array<double, 3> from, std::array<double, 3> to)
-{
-    using K      = detail::Kernel<exact>;
-    using PK     = CGAL::Periodic_3_regular_triangulation_traits_3<K>;
-    using DsVb   = CGAL::Periodic_3_triangulation_ds_vertex_base_3<>;
-    using Vb     = CGAL::Regular_triangulation_vertex_base_3<PK, DsVb>;
-    using VbInfo = CGAL::Triangulation_vertex_base_with_info_3<unsigned, PK, Vb>;
-    using DsCb   = CGAL::Periodic_3_triangulation_ds_cell_base_3<>;
-    using Cb     = CGAL::Regular_triangulation_cell_base_3<PK, DsCb>;
-    using CbInfo = CGAL::Triangulation_cell_base_with_info_3<double, PK, Cb>;
-    using TDS    = CGAL::Triangulation_data_structure_3<VbInfo, CbInfo>;
-    using PRT    = CGAL::Periodic_3_regular_triangulation_3<PK, TDS>;
-    using Weighted_point = typename PRT::Weighted_point;
-    using Bare_point     = typename PRT::Bare_point;
-    using Cell_handle    = typename PRT::Cell_handle;
-
-    // weight bound required by the periodic regular triangulation (same as the slow
-    // path): 0 <= w < 1/64 * domain_size^2.
-    double domain_size = to[0] - from[0];
-    double upper_bound = 0.015625 * domain_size * domain_size;
-
-    // Periodic regular CGAL has no info-carrying range insert and can hide/reinsert
-    // points, so bulk-insert and recover each vertex's index from a point->index map
-    // (after which vertex->info() is O(1)). Same insertion path as the slow reference.
-    PRT pdt(typename PK::Iso_cuboid_3(from[0], from[1], from[2], to[0], to[1], to[2]));
-    std::map<Weighted_point, unsigned> point_index;
-    for (unsigned i = 0; i < points.size(); ++i) {
-        double w = points(i, 3);
-        if (w < 0 || w >= upper_bound) {
-            std::ostringstream oss;
-            oss << "Point weight w must satisfy: 0 <= w < 1/64 * domain_size * domain_size; but got point"
-                << " (" << points(i, 0) << ", " << points(i, 1) << ", " << points(i, 2) << ") weight = " << w;
-            throw std::runtime_error(oss.str());
-        }
-        point_index[Weighted_point(Bare_point(points(i, 0), points(i, 1), points(i, 2)), w)] = i;
-    }
-    {
-        // insert the unique weighted points in sorted (map-key) order, exactly like
-        // the slow reference -- for sparse/degenerate periodic inputs the insertion
-        // order affects which redundant points are hidden, so matching it keeps the
-        // two triangulations (hence the simplex sets) identical.
-        std::vector<Weighted_point> wpts;
-        wpts.reserve(point_index.size());
-        for (const auto& kv : point_index)
-            wpts.push_back(kv.first);
-        pdt.insert(wpts.begin(), wpts.end(), true);
-    }
-    if (pdt.is_triangulation_in_1_sheet())
-        pdt.convert_to_1_sheeted_covering();
-    else
-        throw std::runtime_error("Cannot convert to 1-sheeted covering");
-
-    // For sparse periodic point sets near the 1-sheet boundary, CGAL can leave a
-    // degenerate vertex whose point is not one of the inputs (the slow Alpha_shape_3
-    // path hits the same case). Guard the lookup so we never dereference end();
-    // such a vertex gets a sentinel index and is dropped below, rather than UB.
-    constexpr unsigned k_no_index = static_cast<unsigned>(-1);
-    for (auto vit = pdt.vertices_begin(); vit != pdt.vertices_end(); ++vit) {
-        auto it = point_index.find(vit->point());
-        vit->info() = (it != point_index.end()) ? it->second : k_no_index;
-    }
-
-    auto cr = K().compute_squared_radius_smallest_orthogonal_sphere_3_object();
-    auto sq = [&](auto&&... wps) { return detail::to_floating_point(cr(wps...)); };
-
-    struct Key4 { unsigned a, b, c, d; bool operator==(const Key4& o) const { return a == o.a && b == o.b && c == o.c && d == o.d; } };
-    struct Key4Hash { std::size_t operator()(const Key4& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; h = h * 1000003u ^ k.c; h = h * 1000003u ^ k.d; return h; } };
-    auto key4 = [](unsigned a, unsigned b, unsigned c, unsigned d) { unsigned v[4] = { a, b, c, d }; std::sort(v, v + 4); return Key4{ v[0], v[1], v[2], v[3] }; };
-    struct Key3 { unsigned a, b, c; bool operator==(const Key3& o) const { return a == o.a && b == o.b && c == o.c; } };
-    struct Key3Hash { std::size_t operator()(const Key3& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; h = h * 1000003u ^ k.c; return h; } };
-    auto key3 = [](unsigned a, unsigned b, unsigned c) { if (a > b) std::swap(a, b); if (b > c) std::swap(b, c); if (a > b) std::swap(a, b); return Key3{a, b, c}; };
-    struct Key2 { unsigned a, b; bool operator==(const Key2& o) const { return a == o.a && b == o.b; } };
-    struct Key2Hash { std::size_t operator()(const Key2& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; return h; } };
-    auto key2 = [](unsigned a, unsigned b) { if (a > b) std::swap(a, b); return Key2{a, b}; };
-    auto relax_min = [](auto& map, const auto& k, double a) {
-        auto it = map.find(k);
-        if (it == map.end()) map.emplace(k, a);
-        else it->second = std::min(it->second, a);
-    };
-
-    auto bad = [&](std::initializer_list<unsigned> xs) {
-        for (unsigned x : xs) if (x == k_no_index) return true;
-        return false;
-    };
-
-    // dim 3 (tetrahedra): alpha = weighted squared circumradius; stash for facets
-    std::unordered_map<Key4, double, Key4Hash> cell_alpha;
-    for (auto cit = pdt.cells_begin(); cit != pdt.cells_end(); ++cit) {
-        double a = sq(pdt.point(cit, 0), pdt.point(cit, 1), pdt.point(cit, 2), pdt.point(cit, 3));
-        cit->info() = a;   // keep for facet min even if the cell is dropped below
-        unsigned i0 = cit->vertex(0)->info(), i1 = cit->vertex(1)->info(),
-                 i2 = cit->vertex(2)->info(), i3 = cit->vertex(3)->info();
-        if (bad({i0, i1, i2, i3})) continue;
-        relax_min(cell_alpha, key4(i0, i1, i2, i3), a);
-    }
-
-    // dim 2 (facets): Gabriel ? own : min over the two incident cells
-    std::unordered_map<Key3, double, Key3Hash> facet_alpha;
-    for (auto fit = pdt.facets_begin(); fit != pdt.facets_end(); ++fit) {
-        typename PRT::Facet f = *fit;
-        Cell_handle c = f.first;
-        int i = f.second;
-        unsigned f0 = c->vertex((i + 1) & 3)->info(), f1 = c->vertex((i + 2) & 3)->info(),
-                 f2 = c->vertex((i + 3) & 3)->info();
-        if (bad({f0, f1, f2})) continue;
-        double a;
-        if (pdt.is_Gabriel(f))
-            a = sq(pdt.point(c, (i + 1) & 3), pdt.point(c, (i + 2) & 3), pdt.point(c, (i + 3) & 3));
-        else
-            a = std::min(c->info(), c->neighbor(i)->info());
-        relax_min(facet_alpha, key3(f0, f1, f2), a);
-    }
-
-    // dim 1 (edges): Gabriel ? own : min over incident facets
-    std::unordered_map<Key2, double, Key2Hash> edge_alpha;
-    for (auto eit = pdt.edges_begin(); eit != pdt.edges_end(); ++eit) {
-        typename PRT::Edge e = *eit;
-        Cell_handle c = e.first;
-        int i = e.second, j = e.third;
-        if (bad({c->vertex(i)->info(), c->vertex(j)->info()})) continue;
-        double a;
-        if (pdt.is_Gabriel(e)) {
-            a = sq(pdt.point(c, i), pdt.point(c, j));
-        } else {
-            double best = std::numeric_limits<double>::infinity();
-            typename PRT::Facet_circulator fc = pdt.incident_facets(e), fdone = fc;
-            do {
-                Cell_handle fcc = fc->first;
-                int fi = fc->second;
-                auto it = facet_alpha.find(key3(fcc->vertex((fi + 1) & 3)->info(),
-                                                fcc->vertex((fi + 2) & 3)->info(),
-                                                fcc->vertex((fi + 3) & 3)->info()));
-                if (it != facet_alpha.end()) best = std::min(best, it->second);
-            } while (++fc != fdone);
-            a = best;
-        }
-        relax_min(edge_alpha, key2(c->vertex(i)->info(), c->vertex(j)->info()), a);
-    }
-
-    for (const auto& kv : cell_alpha)
-        add_simplex(std::array<unsigned, 4>{ kv.first.a, kv.first.b, kv.first.c, kv.first.d }, kv.second);
-    for (const auto& kv : facet_alpha)
-        add_simplex(std::array<unsigned, 3>{ kv.first.a, kv.first.b, kv.first.c }, kv.second);
-    for (const auto& kv : edge_alpha)
-        add_simplex(std::array<unsigned, 2>{ kv.first.a, kv.first.b }, kv.second);
-
-    // dim 0 (vertices): Gabriel ? -weight : min over incident edges
-    std::vector<typename PRT::Edge> inc_edges;
-    std::vector<char> seen_v(points.size(), 0);
-    for (auto vit = pdt.vertices_begin(); vit != pdt.vertices_end(); ++vit) {
-        unsigned idx = vit->info();
-        if (idx >= seen_v.size() || seen_v[idx]) continue;
-        seen_v[idx] = 1;
-        double a;
-        if (pdt.is_Gabriel(vit)) {
-            a = sq(vit->point());
-        } else {
-            double best = std::numeric_limits<double>::infinity();
-            inc_edges.clear();
-            pdt.incident_edges(vit, std::back_inserter(inc_edges));
-            for (const auto& e : inc_edges) {
-                auto it = edge_alpha.find(key2(e.first->vertex(e.second)->info(),
-                                               e.first->vertex(e.third)->info()));
-                if (it != edge_alpha.end()) best = std::min(best, it->second);
+        if(repeated) continue;
+        if(periodic_extent) {
+            std::array<Point<3>,4> p{};
+            std::array<double,4> w{};
+            Point<3> center{};
+            for(int i=0;i<4;++i) { p[i]=cell[i].point; w[i]=cell[i].weight; }
+            sphere(p,w,&center);
+            bool central=true;
+            for(int d=0;d<3;++d) {
+                const double tolerance=1024.0*std::numeric_limits<double>::epsilon()*
+                    std::max(1.0,(*periodic_extent)[d]);
+                central=central && center[d]>=-tolerance &&
+                    center[d]<=(*periodic_extent)[d]+tolerance;
             }
-            a = best;
+            if(!central) continue;
         }
-        add_simplex(std::array<unsigned, 1>{ idx }, a);
+        add_tetrahedron(out,cell);
     }
-}
-#endif
-
-
-template<bool exact, class Points, class SimplexCallback>
-void
-diode::
-fill_alpha_shapes2d_direct(const Points& points, const SimplexCallback& add_simplex)
-{
-    using K     = detail::Kernel<exact>;
-    using Vb    = CGAL::Triangulation_vertex_base_with_info_2<unsigned, K>;
-    using Fb    = CGAL::Triangulation_face_base_with_info_2<double, K>;
-    using TDS   = CGAL::Triangulation_data_structure_2<Vb, Fb>;
-    using DT    = CGAL::Delaunay_triangulation_2<K, TDS>;
-    using Point = typename DT::Point;
-    using Face_handle   = typename DT::Face_handle;
-    using Vertex_handle = typename DT::Vertex_handle;
-
-    DT Dt;
-    {
-        std::vector<std::pair<Point, unsigned>> pts;
-        pts.reserve(points.size());
-        for (unsigned i = 0; i < points.size(); ++i)
-            pts.emplace_back(Point(points(i, 0), points(i, 1)), i);
-        Dt.insert(pts.begin(), pts.end());   // spatial-sort accelerated; sets info()
-    }
-
-    // Degenerate input (< 2D, i.e. collinear/<=1 point): the edge walk below
-    // dereferences invalid neighbor faces. Defer to the reference path, which
-    // handles the 1-D alpha complex (vertices + edges).
-    if (Dt.dimension() < 2) {
-        fill_alpha_shapes2d<exact>(points, add_simplex);
-        return;
-    }
-    detail::relabel_duplicates_last_wins(Dt, points,
-        [&](unsigned i) { return Point(points(i, 0), points(i, 1)); });
-
-    auto sq = [](auto&&... ps) { return detail::to_floating_point(CGAL::squared_radius(ps...)); };
-
-    // dim 2 (triangles): alpha = squared circumradius; cached on face info for edges
-    for (auto fit = Dt.finite_faces_begin(); fit != Dt.finite_faces_end(); ++fit) {
-        double a = sq(fit->vertex(0)->point(), fit->vertex(1)->point(), fit->vertex(2)->point());
-        fit->info() = a;
-        add_simplex(std::array<unsigned, 3>{ fit->vertex(0)->info(),
-                                             fit->vertex(1)->info(),
-                                             fit->vertex(2)->info() }, a);
-    }
-
-    // dim 1 (edges): non-attached (Gabriel) -> own circumradius; attached -> min
-    // over the two incident faces (same side_of_bounded_circle test as the
-    // std::set-based version, but reading the cached face circumradii).
-    for (auto eit = Dt.finite_edges_begin(); eit != Dt.finite_edges_end(); ++eit) {
-        Face_handle f = eit->first;
-        int i = eit->second;
-        Vertex_handle vv[2];
-        int k = 0;
-        for (int j = 0; j < 3; ++j)
-            if (j != i) vv[k++] = f->vertex(j);
-        const Point& p1 = vv[0]->point();
-        const Point& p2 = vv[1]->point();
-
-        Face_handle o = f->neighbor(i);
-        bool attached = false;
-        Vertex_handle opp_f = f->vertex(i);
-        if (!Dt.is_infinite(opp_f) &&
-            CGAL::side_of_bounded_circle(p1, p2, opp_f->point()) == CGAL::ON_BOUNDED_SIDE) {
-            attached = true;
-        } else {
-            Vertex_handle opp_o = o->vertex(o->index(f));
-            if (!Dt.is_infinite(opp_o) &&
-                CGAL::side_of_bounded_circle(p1, p2, opp_o->point()) == CGAL::ON_BOUNDED_SIDE)
-                attached = true;
-        }
-
-        double a;
-        if (!attached) {
-            a = sq(p1, p2);
-        } else if (Dt.is_infinite(f)) {
-            a = o->info();
-        } else if (Dt.is_infinite(o)) {
-            a = f->info();
-        } else {
-            a = std::min(f->info(), o->info());
-        }
-        add_simplex(std::array<unsigned, 2>{ vv[0]->info(), vv[1]->info() }, a);
-    }
-
-    // dim 0 (vertices): alpha is 0
-    for (auto vit = Dt.finite_vertices_begin(); vit != Dt.finite_vertices_end(); ++vit)
-        add_simplex(std::array<unsigned, 1>{ vit->info() }, 0.0);
+    return out;
 }
 
-template<bool exact, class Points, class SimplexCallback>
-void
-diode::
-fill_alpha_shapes2d_direct_with_attachment(const Points& points, const SimplexCallback& add_simplex)
-{
-    using K     = detail::Kernel<exact>;
-    using Vb    = CGAL::Triangulation_vertex_base_with_info_2<unsigned, K>;
-    using Fb    = CGAL::Triangulation_face_base_with_info_2<double, K>;
-    using TDS   = CGAL::Triangulation_data_structure_2<Vb, Fb>;
-    using DT    = CGAL::Delaunay_triangulation_2<K, TDS>;
-    using Point = typename DT::Point;
-    using Face_handle   = typename DT::Face_handle;
-    using Vertex_handle = typename DT::Vertex_handle;
-
-    DT Dt;
-    {
-        std::vector<std::pair<Point, unsigned>> pts;
-        pts.reserve(points.size());
-        for (unsigned i = 0; i < points.size(); ++i)
-            pts.emplace_back(Point(points(i, 0), points(i, 1)), i);
-        Dt.insert(pts.begin(), pts.end());
-    }
-
-    // Degenerate input (< 2D): defer to the reference (see fill_alpha_shapes2d_direct).
-    if (Dt.dimension() < 2) {
-        fill_alpha_shapes2d_with_attachment<exact>(points, add_simplex);
-        return;
-    }
-    detail::relabel_duplicates_last_wins(Dt, points,
-        [&](unsigned i) { return Point(points(i, 0), points(i, 1)); });
-
-    auto sq = [](auto&&... ps) { return detail::to_floating_point(CGAL::squared_radius(ps...)); };
-    auto face_idx = [](Face_handle f) {
-        return std::array<unsigned, 3>{ f->vertex(0)->info(), f->vertex(1)->info(), f->vertex(2)->info() };
-    };
-
-    // faces: alpha = circumradius; attacher = the face itself
-    for (auto fit = Dt.finite_faces_begin(); fit != Dt.finite_faces_end(); ++fit) {
-        double a = sq(fit->vertex(0)->point(), fit->vertex(1)->point(), fit->vertex(2)->point());
-        fit->info() = a;
-        auto vs = face_idx(fit);
-        add_simplex(vs, a, std::vector<unsigned>(vs.begin(), vs.end()));
-    }
-
-    // edges: Gabriel -> tau = edge; attached -> tau = min-circumradius incident face
-    for (auto eit = Dt.finite_edges_begin(); eit != Dt.finite_edges_end(); ++eit) {
-        Face_handle f = eit->first;
-        int i = eit->second;
-        Vertex_handle vv[2];
-        int k = 0;
-        for (int j = 0; j < 3; ++j)
-            if (j != i) vv[k++] = f->vertex(j);
-        const Point& p1 = vv[0]->point();
-        const Point& p2 = vv[1]->point();
-
-        Face_handle o = f->neighbor(i);
-        bool attached = false;
-        Vertex_handle opp_f = f->vertex(i);
-        if (!Dt.is_infinite(opp_f) &&
-            CGAL::side_of_bounded_circle(p1, p2, opp_f->point()) == CGAL::ON_BOUNDED_SIDE) {
-            attached = true;
-        } else {
-            Vertex_handle opp_o = o->vertex(o->index(f));
-            if (!Dt.is_infinite(opp_o) &&
-                CGAL::side_of_bounded_circle(p1, p2, opp_o->point()) == CGAL::ON_BOUNDED_SIDE)
-                attached = true;
+inline Complex<3> triangulate3_tiled(
+    const std::vector<Vertex<3>>& base, bool weighted, const Point<3>& period
+) {
+    std::vector<Vertex<3>> vertices;
+    vertices.reserve(base.size()*27);
+    for(int ox=-1;ox<=1;++ox) for(int oy=-1;oy<=1;++oy) for(int oz=-1;oz<=1;++oz)
+        for(auto vertex:base) {
+            vertex.offset={ox,oy,oz};
+            vertex.point[0]+=ox*period[0];
+            vertex.point[1]+=oy*period[1];
+            vertex.point[2]+=oz*period[2];
+            vertices.push_back(vertex);
         }
-
-        double a;
-        std::vector<unsigned> tau;
-        if (!attached) {
-            a = sq(p1, p2);
-            tau = { vv[0]->info(), vv[1]->info() };
-        } else {
-            Face_handle best_f;
-            if (Dt.is_infinite(f))            { a = o->info(); best_f = o; }
-            else if (Dt.is_infinite(o))       { a = f->info(); best_f = f; }
-            else if (f->info() <= o->info())  { a = f->info(); best_f = f; }
-            else                              { a = o->info(); best_f = o; }
-            auto tv = face_idx(best_f);
-            tau.assign(tv.begin(), tv.end());
-        }
-        add_simplex(std::array<unsigned, 2>{ vv[0]->info(), vv[1]->info() }, a, tau);
-    }
-
-    // vertices
-    for (auto vit = Dt.finite_vertices_begin(); vit != Dt.finite_vertices_end(); ++vit)
-        add_simplex(std::array<unsigned, 1>{ vit->info() }, 0.0,
-                    std::vector<unsigned>{ vit->info() });
+    return triangulate3_regular(vertices,weighted,&period);
 }
 
-template<bool exact, class Points, class SimplexCallback>
-void
-diode::
-fill_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex)
-{
-    using K             = detail::Kernel<exact>;
-    using Delaunay2D    = CGAL::Delaunay_triangulation_2<K>;
-    using Vertex_handle = typename Delaunay2D::Vertex_handle;
-    using Point         = typename Delaunay2D::Point;
-    using Face_handle   = typename Delaunay2D::Face_handle;
+template<class Points>
+Complex<3> triangulate3(const Points& points, bool weighted=false, bool periodic=false,
+                        Point<3> from={0,0,0}, Point<3> to={1,1,1},
+                        bool preserve_lower_dimension=false) {
+    initialize_geogram();
+    auto vertices=unique_points<Points,3>(points,weighted,periodic?&from:nullptr);
+    if(!periodic && !spans_three_dimensions(vertices))
+        return preserve_lower_dimension ? lower_dimensional_complex(vertices) : Complex<3>{};
+    if(vertices.size()<4) return Complex<3>{};
+    if(!periodic) return triangulate3_regular(vertices,weighted);
+    Point<3> period{to[0]-from[0],to[1]-from[1],to[2]-from[2]};
+    return triangulate3_tiled(vertices,weighted,period);
+}
 
-    using ASPointMap    = std::unordered_map<Vertex_handle, unsigned>;
-
-    Delaunay2D  Dt;
-    ASPointMap  point_map;
-    for (unsigned i = 0; i < points.size(); ++i)
-    {
-        auto x = points(i,0);
-        auto y = points(i,1);
-        point_map[Dt.insert(Point(x,y))] = i;
+template<std::size_t N, std::size_t D, class Callback>
+void emit_values_plain(const std::map<LiftKey<N,D>,Record<N,D>>& records, const Callback& cb) {
+    std::map<std::array<unsigned,N>,const Record<N,D>*> unique;
+    for(const auto& item:records) {
+        auto [it,inserted]=unique.emplace(item.first.vertices,&item.second);
+        if(!inserted)
+            throw std::runtime_error("Cannot convert periodic triangulation to a one-sheeted covering");
     }
+    for(const auto& item:unique) if(std::isfinite(item.second->alpha)) cb(item.first,item.second->alpha);
+}
 
-    // fill simplex set
-    struct Simplex2D: public std::array<unsigned, 3>
-    {
-        double value;
-        unsigned dimension;
-
-        void sort() { std::sort(begin(), begin() + dimension + 1); }
-
-        bool operator<(const Simplex2D& s) const
-        {
-            if (dimension < s.dimension) return true;
-            if (dimension == s.dimension)
-                return std::lexicographical_compare(begin(), begin() + dimension + 1, s.begin(), s.begin() + dimension + 1);
-
-            return false;
-        }
-
-
-        bool operator==(const Simplex2D& s) const
-        {
-            if (dimension != s.dimension)
-                return false;
-            for (unsigned i = 0; i < dimension + 1; ++i)
-                if ((*this)[i] != s[i])
-                    return false;
-            return true;
-        }
-    };
-
-    auto simplex_from_face = [&](const typename Delaunay2D::Face& f)
-    {
-        Simplex2D s;
-
-        s.dimension = 2;
-        for (int i = 0; i < 3; ++i) s[i] = point_map[f.vertex(i)];
-        auto p1    = f.vertex(0)->point();
-        auto p2    = f.vertex(1)->point();
-        auto p3    = f.vertex(2)->point();
-        auto alpha = CGAL::squared_radius(p1, p2, p3);
-        s.value = detail::to_floating_point(alpha);
-
-        s.sort();
-
-        return s;
-    };
-
-    std::set<Simplex2D> simplices;
-
-    // faces
-    for(auto cur = Dt.finite_faces_begin(); cur != Dt.finite_faces_end(); ++cur)
-    {
-        Simplex2D s = simplex_from_face(*cur);
-        simplices.emplace(s);
+template<std::size_t N, std::size_t D, class Callback>
+void emit_values_attachment(const std::map<LiftKey<N,D>,Record<N,D>>& records, const Callback& cb) {
+    std::map<std::array<unsigned,N>,const Record<N,D>*> unique;
+    for(const auto& item:records) {
+        auto [it,inserted]=unique.emplace(item.first.vertices,&item.second);
+        if(!inserted)
+            throw std::runtime_error("Cannot convert periodic triangulation to a one-sheeted covering");
     }
+    for(const auto& item:unique) if(std::isfinite(item.second->alpha)) cb(item.first,item.second->alpha,item.second->tau);
+}
 
-    // edges
-    for(auto cur = Dt.finite_edges_begin(); cur != Dt.finite_edges_end(); ++cur)
-    {
-        auto e = *cur;
-        Simplex2D s; s.dimension = 1;
-
-        std::array<Point,2> points;
-        unsigned j = 0;
-        Face_handle f = e.first;
-        for (int i = 0; i < 3; ++i)
-            if (i != e.second)
-            {
-                points[j] = f->vertex(i)->point();
-                s[j++] = point_map[f->vertex(i)];
-            }
-        auto& p1 = points[0];
-        auto& p2 = points[1];
-
-        Face_handle o = f->neighbor(e.second);
-        if (o == Face_handle())
-        {
-            s.value = detail::to_floating_point(CGAL::squared_radius(p1, p2));
-        } else
-        {
-            int oi = o->index(f);
-
-            bool attached = false;
-            if (!Dt.is_infinite(f->vertex(e.second)) &&
-                CGAL::side_of_bounded_circle(p1, p2,
-                                             f->vertex(e.second)->point()) == CGAL::ON_BOUNDED_SIDE)
-                attached = true;
-            else if (!Dt.is_infinite(o->vertex(oi)) &&
-                     CGAL::side_of_bounded_circle(p1, p2,
-                                                  o->vertex(oi)->point()) == CGAL::ON_BOUNDED_SIDE)
-                attached = true;
-            else
-                s.value = detail::to_floating_point(CGAL::squared_radius(p1, p2));
-
-            if (attached)
-            {
-                if (Dt.is_infinite(f))
-                    s.value = simplices.find(simplex_from_face(*o))->value;
-                else if (Dt.is_infinite(o))
-                    s.value = simplices.find(simplex_from_face(*f))->value;
-                else
-                    s.value = std::min(simplices.find(simplex_from_face(*f))->value,
-                                       simplices.find(simplex_from_face(*o))->value);
-            }
-        }
-
-        s.sort();
-        simplices.emplace(s);
-    }
-
-    // vertices
-    for(auto cur = Dt.finite_vertices_begin(); cur != Dt.finite_vertices_end(); ++cur)
-    {
-        Simplex2D s;
-
-        s.dimension = 0;
-        s.value = 0;
-        for (int i = 0; i < 3; ++i)
-            if (cur->face()->vertex(i) != Vertex_handle() && cur->face()->vertex(i)->point() == cur->point())
-                s[0] = point_map[cur->face()->vertex(i)];
-
-        simplices.emplace(s);
-    }
-
-    // invoke callback with the simplices
-    for (auto& s : simplices)
-    {
-        if (s.dimension == 0)
-        {
-            std::array<unsigned, 1> vertices { s[0] };
-            add_simplex(vertices, s.value);
-        } else if (s.dimension == 1)
-        {
-            std::array<unsigned, 2> vertices { s[0], s[1] };
-            add_simplex(vertices, s.value);
-        } else if (s.dimension == 2)
-        {
-            std::array<unsigned, 3> vertices { s[0], s[1], s[2] };
-            add_simplex(vertices, s.value);
-        }
+template<std::size_t N, std::size_t D, class Callback>
+void emit_combinatorics(const std::map<LiftKey<N,D>,Record<N,D>>& records, const Callback& cb) {
+    std::set<std::array<unsigned,N>> seen;
+    for(const auto& item:records) {
+        if(!seen.insert(item.first.vertices).second)
+            throw std::runtime_error("Cannot convert periodic triangulation to a one-sheeted covering");
+        cb(item.first.vertices);
     }
 }
 
-
-// Variant that emits attacher info for each simplex.
-// Callback signature: add_simplex(sigma_verts, alpha, tau_verts).
-// For Gabriel sigma, tau == sigma. For non-Gabriel sigma, tau is a Gabriel
-// coface whose own squared circumradius equals alpha.
-template<bool exact, class Points, class SimplexCallback>
-void
-diode::
-fill_alpha_shapes2d_with_attachment(const Points& points, const SimplexCallback& add_simplex)
-{
-    using K             = detail::Kernel<exact>;
-    using Delaunay2D    = CGAL::Delaunay_triangulation_2<K>;
-    using Vertex_handle = typename Delaunay2D::Vertex_handle;
-    using Point         = typename Delaunay2D::Point;
-    using Face_handle   = typename Delaunay2D::Face_handle;
-
-    using ASPointMap    = std::unordered_map<Vertex_handle, unsigned>;
-
-    Delaunay2D  Dt;
-    ASPointMap  point_map;
-    for (unsigned i = 0; i < points.size(); ++i)
-    {
-        auto x = points(i,0);
-        auto y = points(i,1);
-        point_map[Dt.insert(Point(x,y))] = i;
+template<std::size_t N, std::size_t D, class Callback>
+void emit_lifts(const std::map<LiftKey<N,D>,Record<N,D>>& records, const Callback& cb) {
+    std::map<std::array<unsigned,N>,std::array<std::array<int,D>,N>> seen;
+    for(const auto& item:records) {
+        auto [it,inserted]=seen.emplace(item.first.vertices,item.first.offsets);
+        if(!inserted && it->second!=item.first.offsets)
+            throw std::runtime_error("Cannot convert periodic triangulation to a one-sheeted covering");
     }
-
-    // Same Simplex2D as the no-attachment version, plus attacher fields:
-    //   attacher_dim:     0 (vertex), 1 (edge), 2 (face)
-    //   attacher_vertices: meaningful prefix of length attacher_dim + 1
-    struct Simplex2D: public std::array<unsigned, 3>
-    {
-        double value;
-        unsigned dimension;
-        unsigned attacher_dim;
-        std::array<unsigned, 3> attacher_vertices;
-
-        void sort() { std::sort(begin(), begin() + dimension + 1); }
-
-        bool operator<(const Simplex2D& s) const
-        {
-            if (dimension < s.dimension) return true;
-            if (dimension == s.dimension)
-                return std::lexicographical_compare(begin(), begin() + dimension + 1, s.begin(), s.begin() + dimension + 1);
-
-            return false;
-        }
-
-
-        bool operator==(const Simplex2D& s) const
-        {
-            if (dimension != s.dimension)
-                return false;
-            for (unsigned i = 0; i < dimension + 1; ++i)
-                if ((*this)[i] != s[i])
-                    return false;
-            return true;
-        }
-    };
-
-    auto simplex_from_face = [&](const typename Delaunay2D::Face& f)
-    {
-        Simplex2D s;
-
-        s.dimension = 2;
-        for (int i = 0; i < 3; ++i) s[i] = point_map[f.vertex(i)];
-        auto p1    = f.vertex(0)->point();
-        auto p2    = f.vertex(1)->point();
-        auto p3    = f.vertex(2)->point();
-        auto alpha = CGAL::squared_radius(p1, p2, p3);
-        s.value = detail::to_floating_point(alpha);
-
-        // Faces are always self-attaching (their own squared circumradius
-        // is what defines their alpha value).
-        s.attacher_dim = 2;
-        s.attacher_vertices = { s[0], s[1], s[2] };
-
-        s.sort();
-
-        return s;
-    };
-
-    std::set<Simplex2D> simplices;
-
-    // faces
-    for(auto cur = Dt.finite_faces_begin(); cur != Dt.finite_faces_end(); ++cur)
-    {
-        Simplex2D s = simplex_from_face(*cur);
-        simplices.emplace(s);
-    }
-
-    // edges
-    for(auto cur = Dt.finite_edges_begin(); cur != Dt.finite_edges_end(); ++cur)
-    {
-        auto e = *cur;
-        Simplex2D s; s.dimension = 1;
-
-        std::array<Point,2> points;
-        unsigned j = 0;
-        Face_handle f = e.first;
-        for (int i = 0; i < 3; ++i)
-            if (i != e.second)
-            {
-                points[j] = f->vertex(i)->point();
-                s[j++] = point_map[f->vertex(i)];
-            }
-        auto& p1 = points[0];
-        auto& p2 = points[1];
-
-        // Default: edge is its own attacher (Gabriel case).
-        s.attacher_dim = 1;
-        s.attacher_vertices = { s[0], s[1], 0 };
-
-        Face_handle o = f->neighbor(e.second);
-        if (o == Face_handle())
-        {
-            s.value = detail::to_floating_point(CGAL::squared_radius(p1, p2));
-        } else
-        {
-            int oi = o->index(f);
-
-            bool attached = false;
-            if (!Dt.is_infinite(f->vertex(e.second)) &&
-                CGAL::side_of_bounded_circle(p1, p2,
-                                             f->vertex(e.second)->point()) == CGAL::ON_BOUNDED_SIDE)
-                attached = true;
-            else if (!Dt.is_infinite(o->vertex(oi)) &&
-                     CGAL::side_of_bounded_circle(p1, p2,
-                                                  o->vertex(oi)->point()) == CGAL::ON_BOUNDED_SIDE)
-                attached = true;
-            else
-                s.value = detail::to_floating_point(CGAL::squared_radius(p1, p2));
-
-            if (attached)
-            {
-                Simplex2D winning_face;
-                if (Dt.is_infinite(f))
-                    winning_face = *simplices.find(simplex_from_face(*o));
-                else if (Dt.is_infinite(o))
-                    winning_face = *simplices.find(simplex_from_face(*f));
-                else
-                {
-                    Simplex2D sf = *simplices.find(simplex_from_face(*f));
-                    Simplex2D so = *simplices.find(simplex_from_face(*o));
-                    winning_face = (sf.value <= so.value) ? sf : so;
-                }
-                s.value = winning_face.value;
-                s.attacher_dim = 2;
-                s.attacher_vertices = winning_face.attacher_vertices;
-            }
-        }
-
-        s.sort();
-        simplices.emplace(s);
-    }
-
-    // vertices: always Gabriel for unweighted alpha shapes (alpha = 0); tau = vertex itself.
-    for(auto cur = Dt.finite_vertices_begin(); cur != Dt.finite_vertices_end(); ++cur)
-    {
-        Simplex2D s;
-
-        s.dimension = 0;
-        s.value = 0;
-        for (int i = 0; i < 3; ++i)
-            if (cur->face()->vertex(i) != Vertex_handle() && cur->face()->vertex(i)->point() == cur->point())
-                s[0] = point_map[cur->face()->vertex(i)];
-
-        s.attacher_dim = 0;
-        s.attacher_vertices = { s[0], 0, 0 };
-
-        simplices.emplace(s);
-    }
-
-    // invoke callback with the simplices
-    for (auto& s : simplices)
-    {
-        std::vector<unsigned> tau_verts(s.attacher_vertices.begin(),
-                                        s.attacher_vertices.begin() + s.attacher_dim + 1);
-        if (s.dimension == 0)
-        {
-            std::array<unsigned, 1> vertices { s[0] };
-            add_simplex(vertices, s.value, tau_verts);
-        } else if (s.dimension == 1)
-        {
-            std::array<unsigned, 2> vertices { s[0], s[1] };
-            add_simplex(vertices, s.value, tau_verts);
-        } else if (s.dimension == 2)
-        {
-            std::array<unsigned, 3> vertices { s[0], s[1], s[2] };
-            add_simplex(vertices, s.value, tau_verts);
-        }
-    }
+    for(const auto& item:seen) cb(item.first,item.second);
 }
 
-
-template<bool exact, class Points, class SimplexCallback>
-void
-diode::
-fill_periodic_alpha_shapes2d_direct(const Points& points, const SimplexCallback& add_simplex, std::array<double, 2> from, std::array<double, 2> to)
-{
-    using K             = detail::Kernel<exact>;
-    using GT            = CGAL::Periodic_2_Delaunay_triangulation_traits_2<K>;
-    using PDelaunay2D   = CGAL::Periodic_2_Delaunay_triangulation_2<GT>;
-    using Vertex_handle = typename PDelaunay2D::Vertex_handle;
-    using Point         = typename PDelaunay2D::Point;
-    using Face_handle   = typename PDelaunay2D::Face_handle;
-    using Iso_rectangle = typename PDelaunay2D::Iso_rectangle;
-
-    using ASPointMap = std::unordered_map<Vertex_handle, unsigned>;
-
-    Iso_rectangle domain(from[0], from[1], to[0], to[1]);
-    PDelaunay2D pdt(domain);
-    ASPointMap point_map;
-    for (unsigned i = 0; i < points.size(); ++i)
-        point_map[pdt.insert(Point(points(i, 0), points(i, 1)))] = i;
-
-    if (pdt.is_triangulation_in_1_sheet())
-        pdt.convert_to_1_sheeted_covering();
-    else
-        throw std::runtime_error("Cannot convert to 1-sheeted covering");
-
-    auto sq = [](auto&&... ps) { return detail::to_floating_point(CGAL::squared_radius(ps...)); };
-
-    struct Key3 { unsigned a, b, c; bool operator==(const Key3& o) const { return a == o.a && b == o.b && c == o.c; } };
-    struct Key3Hash { std::size_t operator()(const Key3& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; h = h * 1000003u ^ k.c; return h; } };
-    auto key3 = [](unsigned a, unsigned b, unsigned c) { if (a > b) std::swap(a, b); if (b > c) std::swap(b, c); if (a > b) std::swap(a, b); return Key3{a, b, c}; };
-    struct Key2 { unsigned a, b; bool operator==(const Key2& o) const { return a == o.a && b == o.b; } };
-    struct Key2Hash { std::size_t operator()(const Key2& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; return h; } };
-    auto key2 = [](unsigned a, unsigned b) { if (a > b) std::swap(a, b); return Key2{a, b}; };
-
-    auto face_key = [&](Face_handle f) {
-        return key3(point_map[f->vertex(0)], point_map[f->vertex(1)], point_map[f->vertex(2)]);
-    };
-
-    // faces: alpha = squared circumradius of the offset-corrected triangle;
-    // dedup by vertex set (first-wins), matching the std::set-based reference.
-    std::unordered_map<Key3, double, Key3Hash> face_value;
-    for (auto cur = pdt.finite_faces_begin(); cur != pdt.finite_faces_end(); ++cur) {
-        auto T = pdt.triangle(pdt.periodic_triangle(cur));
-        double v = sq(T.vertex(0), T.vertex(1), T.vertex(2));
-        face_value.emplace(face_key(cur), v);
-    }
-    for (const auto& kv : face_value)
-        add_simplex(std::array<unsigned, 3>{ kv.first.a, kv.first.b, kv.first.c }, kv.second);
-
-    // edges: non-attached -> own circumradius; attached -> min over the two
-    // incident faces (periodic triangulations have no infinite faces). The
-    // Gabriel/attached test is done in each incident face's OWN periodic frame:
-    // the edge endpoints and the apex both come from pdt.triangle(<that face>), so
-    // all three points carry the same offsets. (Mixing offset-corrected endpoints
-    // with an un-offset apex -- vertex(i)->point() -- misclassifies edges whose
-    // incident faces wrap the periodic boundary.)
-    std::unordered_map<Key2, double, Key2Hash> edge_value;
-    for (auto cur = pdt.finite_edges_begin(); cur != pdt.finite_edges_end(); ++cur) {
-        auto e = *cur;
-        Face_handle f = e.first;
-        int ei = e.second;
-        Face_handle o = f->neighbor(ei);
-        auto tf = pdt.triangle(f);
-        Point ep[2];
-        unsigned idx[2];
-        int j = 0;
-        for (int i = 0; i < 3; ++i)
-            if (i != ei) { ep[j] = tf.vertex(i); idx[j] = point_map[f->vertex(i)]; ++j; }
-
-        // f-side: apex tf.vertex(ei) shares the frame of the endpoints ep[].
-        bool attached =
-            CGAL::side_of_bounded_circle(ep[0], ep[1], tf.vertex(ei)) == CGAL::ON_BOUNDED_SIDE;
-        if (!attached) {
-            // o-side: redo the whole test in o's own frame (endpoints + apex from
-            // pdt.triangle(o)); the in-circle predicate is translation-invariant, so
-            // testing each apex against the edge as positioned in its own face is correct.
-            int oi = o->index(f);
-            auto to = pdt.triangle(o);
-            Point oq[2];
-            int k = 0;
-            for (int i = 0; i < 3; ++i)
-                if (i != oi) oq[k++] = to.vertex(i);
-            attached =
-                CGAL::side_of_bounded_circle(oq[0], oq[1], to.vertex(oi)) == CGAL::ON_BOUNDED_SIDE;
-        }
-
-        double v = attached ? std::min(face_value.at(face_key(f)), face_value.at(face_key(o)))
-                            : sq(ep[0], ep[1]);
-        edge_value.emplace(key2(idx[0], idx[1]), v);
-    }
-    for (const auto& kv : edge_value)
-        add_simplex(std::array<unsigned, 2>{ kv.first.a, kv.first.b }, kv.second);
-
-    // vertices: alpha 0 (dedup by index; each input point is one canonical vertex)
-    std::vector<char> seen_v(points.size(), 0);
-    for (auto cur = pdt.finite_vertices_begin(); cur != pdt.finite_vertices_end(); ++cur) {
-        for (int i = 0; i < 3; ++i) {
-            auto vh = cur->face()->vertex(i);
-            if (vh != Vertex_handle() && vh->point() == cur->point()) {
-                unsigned idx = point_map[vh];
-                if (idx < seen_v.size() && !seen_v[idx]) { seen_v[idx] = 1; add_simplex(std::array<unsigned, 1>{ idx }, 0.0); }
-                break;
-            }
-        }
-    }
+template<class C, class CB> void emit_alpha(C& x,const CB& cb) {
+    compute_alpha(x);
+    emit_values_plain(x.v,cb); emit_values_plain(x.e,cb); emit_values_plain(x.f,cb);
+}
+template<class CB> void emit_alpha(Complex<3>& x,const CB& cb) {
+    compute_alpha(x);
+    emit_values_plain(x.v,cb); emit_values_plain(x.e,cb); emit_values_plain(x.f,cb); emit_values_plain(x.c,cb);
+}
+template<class C, class CB> void emit_attachment(C& x,const CB& cb) {
+    compute_alpha(x);
+    emit_values_attachment(x.v,cb); emit_values_attachment(x.e,cb); emit_values_attachment(x.f,cb);
+}
+template<class CB> void emit_attachment(Complex<3>& x,const CB& cb) {
+    compute_alpha(x);
+    emit_values_attachment(x.v,cb); emit_values_attachment(x.e,cb); emit_values_attachment(x.f,cb); emit_values_attachment(x.c,cb);
+}
+template<class C, class CB> void emit_delaunay(const C& x,const CB& cb) {
+    emit_combinatorics(x.v,cb); emit_combinatorics(x.e,cb); emit_combinatorics(x.f,cb);
+}
+template<class CB> void emit_delaunay(const Complex<3>& x,const CB& cb) {
+    emit_combinatorics(x.v,cb); emit_combinatorics(x.e,cb); emit_combinatorics(x.f,cb); emit_combinatorics(x.c,cb);
+}
+template<class C, class CB> void emit_periodic_lifts(const C& x,const CB& cb) {
+    emit_lifts(x.v,cb); emit_lifts(x.e,cb); emit_lifts(x.f,cb);
+}
+template<class CB> void emit_periodic_lifts(const Complex<3>& x,const CB& cb) {
+    emit_lifts(x.v,cb); emit_lifts(x.e,cb); emit_lifts(x.f,cb); emit_lifts(x.c,cb);
 }
 
-template<bool exact, class Points, class SimplexCallback>
-void
-diode::
-fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex,std::array<double, 2> from, std::array<double, 2> to)
-{
-    using K             = detail::Kernel<exact>;
-    using GT            = CGAL::Periodic_2_Delaunay_triangulation_traits_2<K>;
-    using PDelaunay2D   = CGAL::Periodic_2_Delaunay_triangulation_2<GT>;
-    using Vertex_handle = typename PDelaunay2D::Vertex_handle;
-    using Point         = typename PDelaunay2D::Point;
-    using Face_handle   = typename PDelaunay2D::Face_handle;
-    using Iso_rectangle = typename PDelaunay2D::Iso_rectangle;
+} // namespace detail
 
-    using ASPointMap    = std::unordered_map<Vertex_handle, unsigned>;
+template<bool exact> template<class Points,class SimplexCallback>
+void AlphaShapes<exact>::fill_alpha_shapes(const Points& p,const SimplexCallback& cb) { fill_alpha_shapes_direct(p,cb); }
+template<bool exact> template<class Points,class SimplexCallback>
+void AlphaShapes<exact>::fill_alpha_shapes_direct(const Points& p,const SimplexCallback& cb) { auto x=detail::triangulate3(p); detail::emit_alpha(x,cb); }
+template<bool exact> template<class Points,class SimplexCallback>
+void AlphaShapes<exact>::fill_alpha_shapes_with_attachment(const Points& p,const SimplexCallback& cb) { fill_alpha_shapes_direct_with_attachment(p,cb); }
+template<bool exact> template<class Points,class SimplexCallback>
+void AlphaShapes<exact>::fill_alpha_shapes_direct_with_attachment(const Points& p,const SimplexCallback& cb) { auto x=detail::triangulate3(p); detail::emit_attachment(x,cb); }
+template<bool exact> template<class Points,class SimplexCallback>
+void AlphaShapes<exact>::fill_weighted_alpha_shapes(const Points& p,const SimplexCallback& cb) { fill_weighted_alpha_shapes_direct(p,cb); }
+template<bool exact> template<class Points,class SimplexCallback>
+void AlphaShapes<exact>::fill_weighted_alpha_shapes_direct(const Points& p,const SimplexCallback& cb) { auto x=detail::triangulate3(p,true); detail::emit_alpha(x,cb); }
+template<bool exact> template<class Points,class SimplexCallback>
+void AlphaShapes<exact>::fill_periodic_alpha_shapes(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { fill_periodic_alpha_shapes_direct(p,cb,a,b); }
+template<bool exact> template<class Points,class SimplexCallback>
+void AlphaShapes<exact>::fill_periodic_alpha_shapes_direct(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { auto x=detail::triangulate3(p,false,true,a,b); detail::emit_alpha(x,cb); }
+template<bool exact> template<class Points,class SimplexCallback>
+void AlphaShapes<exact>::fill_delaunay(const Points& p,const SimplexCallback& cb) { auto x=detail::triangulate3(p,false,false,{0,0,0},{1,1,1},true); detail::emit_delaunay(x,cb); }
+template<bool exact> template<class Points,class SimplexCallback>
+void AlphaShapes<exact>::fill_weighted_delaunay(const Points& p,const SimplexCallback& cb) { auto x=detail::triangulate3(p,true,false,{0,0,0},{1,1,1},true); detail::emit_delaunay(x,cb); }
+template<bool exact> template<class Points,class SimplexCallback>
+void AlphaShapes<exact>::fill_periodic_delaunay(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { auto x=detail::triangulate3(p,false,true,a,b); detail::emit_delaunay(x,cb); }
+template<bool exact> template<class Points,class SimplexCallback>
+void AlphaShapes<exact>::fill_periodic_delaunay_lifts(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { auto x=detail::triangulate3(p,false,true,a,b); detail::emit_periodic_lifts(x,cb); }
+template<bool exact> template<class Points,class SimplexCallback>
+void AlphaShapes<exact>::fill_weighted_periodic_alpha_shapes(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { fill_weighted_periodic_alpha_shapes_direct(p,cb,a,b); }
+template<bool exact> template<class Points,class SimplexCallback>
+void AlphaShapes<exact>::fill_weighted_periodic_alpha_shapes_direct(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { auto x=detail::triangulate3(p,true,true,a,b); detail::emit_alpha(x,cb); }
+template<bool exact> template<class Points,class SimplexCallback>
+void AlphaShapes<exact>::fill_weighted_periodic_delaunay(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { auto x=detail::triangulate3(p,true,true,a,b); detail::emit_delaunay(x,cb); }
 
-    Iso_rectangle domain(from[0],from[1],to[0],to[1]);
-    PDelaunay2D  pdt(domain);
-
-
-    ASPointMap  point_map;
-
-    for (unsigned i = 0; i < points.size(); ++i)
-    {
-        auto x = points(i,0);
-        auto y = points(i,1);
-        point_map[pdt.insert(Point(x,y))] = i;
+template<bool exact> template<class Points>
+std::array<typename Points::Real,3> AlphaShapes<exact>::circumcenter(const Points& p) {
+    if(p.size()!=3 && p.size()!=4) throw std::runtime_error("circumcenter expects three or four 3D points");
+    if(p.size()==3) {
+        std::array<detail::Point<3>,3> q{}; std::array<double,3>w{}; detail::Point<3> c{};
+        for(int i=0;i<3;++i) for(int d=0;d<3;++d) q[i][d]=p(i,d); detail::sphere(q,w,&c);
+        return {typename Points::Real(c[0]),typename Points::Real(c[1]),typename Points::Real(c[2])};
     }
-    
-    if (pdt.is_triangulation_in_1_sheet())
-        pdt.convert_to_1_sheeted_covering();
-    else
-        throw std::runtime_error("Cannot convert to 1-sheeted covering");
-
-    // fill simplex set
-    struct Simplex2D: public std::array<unsigned, 3>
-    {
-        double value;
-        unsigned dimension;
-
-        void sort() { std::sort(begin(), begin() + dimension + 1); }
-
-        bool operator<(const Simplex2D& s) const
-        {
-            if (dimension < s.dimension) return true;
-            if (dimension == s.dimension)
-                return std::lexicographical_compare(begin(), begin() + dimension + 1, s.begin(), s.begin() + dimension + 1);
-
-            return false;
-        }
-
-
-        bool operator==(const Simplex2D& s) const
-        {
-            if (dimension != s.dimension)
-                return false;
-            for (unsigned i = 0; i < dimension + 1; ++i)
-                if ((*this)[i] != s[i])
-                    return false;
-            return true;
-        }
-    };
-
-     auto simplex_from_face = [&](const typename PDelaunay2D::Face_handle f)
-     {
-        Simplex2D s;
-
-        s.dimension = 2;
-        for (int i = 0; i < 3; ++i) s[i] = point_map[f->vertex(i)];
-        
-        auto T =pdt.triangle(pdt.periodic_triangle(f));
-
-        auto p1    = T.vertex(0);
-        auto p2    = T.vertex(1);
-        auto p3    = T.vertex(2);
-
-        auto alpha = CGAL::squared_radius(p1, p2, p3);
-        s.value = detail::to_floating_point(alpha);
-
-        s.sort();
-
-        return s;
-    };
-    
-    std::set<Simplex2D> simplices;
-
-
-    // faces
-    for(auto cur = pdt.finite_faces_begin(); cur != pdt.finite_faces_end(); ++cur)
-    {
-        Simplex2D s = simplex_from_face(cur);
-        simplices.emplace(s);
-    }
-
-    // edges
-    for(auto cur = pdt.finite_edges_begin(); cur != pdt.finite_edges_end(); ++cur)
-    {
-        auto e = *cur;
-        Simplex2D s; s.dimension = 1;
-
-        std::array<Point,2> points;
-        unsigned j = 0;
-        Face_handle f = e.first;
-        auto t = pdt.triangle(f);
-        for (int i = 0; i < 3; ++i)
-            if (i != e.second)
-            {
-                points[j] = t.vertex(i);
-                s[j++] = point_map[f->vertex(i)];
-            }
-        auto& p1 = points[0];
-        auto& p2 = points[1];
-
-        Face_handle o = f->neighbor(e.second);
-        if (o == Face_handle())
-        {
-            s.value = detail::to_floating_point(CGAL::squared_radius(p1, p2));
-        } else
-        {
-            int oi = o->index(f);
-
-            // frame-consistent Gabriel test: test each apex against the shared edge in
-            // its OWN incident face's periodic frame -- f's apex against the edge from
-            // pdt.triangle(f), o's apex against the edge from pdt.triangle(o) -- instead
-            // of testing un-offset apex points against the offset-corrected endpoints
-            // (see fill_periodic_alpha_shapes2d_direct for the offset-frame rationale).
-            bool attached = false;
-            if (!pdt.is_infinite(f->vertex(e.second)) &&
-                CGAL::side_of_bounded_circle(p1, p2, t.vertex(e.second)) == CGAL::ON_BOUNDED_SIDE)
-                attached = true;
-            else
-            {
-                auto to = pdt.triangle(o);
-                Point oq[2]; int k = 0;
-                for (int i = 0; i < 3; ++i) if (i != oi) oq[k++] = to.vertex(i);
-                if (!pdt.is_infinite(o->vertex(oi)) &&
-                    CGAL::side_of_bounded_circle(oq[0], oq[1], to.vertex(oi)) == CGAL::ON_BOUNDED_SIDE)
-                    attached = true;
-                else
-                    s.value = detail::to_floating_point(CGAL::squared_radius(p1, p2));
-            }
-
-            if (attached)
-            {
-                if (pdt.is_infinite(f)){
-
-                    s.value = simplices.find(simplex_from_face(o))->value;
-
-                    }
-                else if (pdt.is_infinite(o)){
-                    s.value = simplices.find(simplex_from_face(f))->value;
-
-                }
-                else{
-                    s.value = std::min(simplices.find(simplex_from_face(f))->value,
-                                       simplices.find(simplex_from_face(o))->value);
-                }
-                    
-            }
-        }
-
-        s.sort();
-        simplices.emplace(s);
-    }
-
-    // vertices
-    for(auto cur = pdt.finite_vertices_begin(); cur != pdt.finite_vertices_end(); ++cur)
-    {
-        Simplex2D s;
-
-        s.dimension = 0;
-        s.value = 0;
-        for (int i = 0; i < 3; ++i)
-            if (cur->face()->vertex(i) != Vertex_handle() && cur->face()->vertex(i)->point() == cur->point())
-                s[0] = point_map[cur->face()->vertex(i)];
-
-        simplices.emplace(s);
-    }
-
-    // invoke callback with the simplices
-    for (auto& s : simplices)
-    {
-        if (s.dimension == 0)
-        {
-            std::array<unsigned, 1> vertices { s[0] };
-            add_simplex(vertices, s.value);
-        } else if (s.dimension == 1)
-        {
-            std::array<unsigned, 2> vertices { s[0], s[1] };
-            add_simplex(vertices, s.value);
-        } else if (s.dimension == 2)
-        {
-            std::array<unsigned, 3> vertices { s[0], s[1], s[2] };
-            add_simplex(vertices, s.value);
-        }
-    }
+    std::array<detail::Point<3>,4> q{}; std::array<double,4>w{}; detail::Point<3> c{};
+    for(int i=0;i<4;++i) for(int d=0;d<3;++d) q[i][d]=p(i,d); detail::sphere(q,w,&c);
+    return {typename Points::Real(c[0]),typename Points::Real(c[1]),typename Points::Real(c[2])};
 }
 
-// ===========================================================================
-// Combinatorics-only exporters: emit the Delaunay simplices (the alpha-complex
-// simplex set) with NO alpha values. The callback takes only the vertex array:
-//     add_simplex(std::array<unsigned, D>)
-// for D in {1,2,3,4}. These skip every Gabriel test / circumradius evaluation;
-// they exist for consumers that recompute filtration values themselves (e.g. a
-// differentiable Cech-Delaunay filtration, which derives values as min-enclosing-
-// ball radii from each simplex's own vertices).
-// ===========================================================================
+template<bool exact,class Points,class SimplexCallback>
+void fill_alpha_shapes2d(const Points& p,const SimplexCallback& cb) { fill_alpha_shapes2d_direct<exact>(p,cb); }
+template<bool exact,class Points,class SimplexCallback>
+void fill_alpha_shapes2d_direct(const Points& p,const SimplexCallback& cb) { auto x=detail::triangulate2(p); detail::emit_alpha(x,cb); }
+template<bool exact,class Points,class SimplexCallback>
+void fill_alpha_shapes2d_with_attachment(const Points& p,const SimplexCallback& cb) { fill_alpha_shapes2d_direct_with_attachment<exact>(p,cb); }
+template<bool exact,class Points,class SimplexCallback>
+void fill_alpha_shapes2d_direct_with_attachment(const Points& p,const SimplexCallback& cb) { auto x=detail::triangulate2(p); detail::emit_attachment(x,cb); }
+template<bool exact,class Points,class SimplexCallback>
+void fill_periodic_alpha_shapes2d(const Points& p,const SimplexCallback& cb,std::array<double,2> a,std::array<double,2> b) { fill_periodic_alpha_shapes2d_direct<exact>(p,cb,a,b); }
+template<bool exact,class Points,class SimplexCallback>
+void fill_periodic_alpha_shapes2d_direct(const Points& p,const SimplexCallback& cb,std::array<double,2> a,std::array<double,2> b) { auto x=detail::triangulate2(p,true,a,b); detail::emit_alpha(x,cb); }
+template<bool exact,class Points,class SimplexCallback>
+void fill_delaunay2d(const Points& p,const SimplexCallback& cb) { auto x=detail::triangulate2(p); detail::emit_delaunay(x,cb); }
+template<bool exact,class Points,class SimplexCallback>
+void fill_periodic_delaunay2d(const Points& p,const SimplexCallback& cb,std::array<double,2> a,std::array<double,2> b) { auto x=detail::triangulate2(p,true,a,b); detail::emit_delaunay(x,cb); }
+template<bool exact,class Points,class SimplexCallback>
+void fill_periodic_delaunay2d_lifts(const Points& p,const SimplexCallback& cb,std::array<double,2> a,std::array<double,2> b) { auto x=detail::triangulate2(p,true,a,b); detail::emit_periodic_lifts(x,cb); }
 
-template<bool exact>
-template<class Points, class SimplexCallback>
-void
-diode::AlphaShapes<exact>::
-fill_delaunay(const Points& points, const SimplexCallback& add_simplex)
-{
-    using K     = detail::Kernel<exact>;
-    using Vb    = CGAL::Triangulation_vertex_base_with_info_3<unsigned, K>;
-    using Cb    = CGAL::Triangulation_cell_base_with_info_3<double, K>;
-    using TDS   = CGAL::Triangulation_data_structure_3<Vb, Cb>;
-    using DT    = CGAL::Delaunay_triangulation_3<K, TDS, CGAL::Fast_location>;
-    using Point = typename K::Point_3;
-
-    // Same bulk insert as fill_alpha_shapes_direct: the input index rides in the
-    // vertex info, so vertex->info() is the original point id (no Point->index map).
-    DT dt;
-    {
-        std::vector<std::pair<Point, unsigned>> pts;
-        pts.reserve(points.size());
-        for (unsigned i = 0; i < points.size(); ++i)
-            pts.emplace_back(Point(points(i, 0), points(i, 1), points(i, 2)), i);
-        dt.insert(pts.begin(), pts.end());   // spatial-sort accelerated
-    }
-    // A lower-dimensional Delaunay (collinear/coplanar input) is fine to walk here
-    // -- only the alpha Gabriel walk needs full dimension -- but keep duplicate
-    // vertex ids consistent with the alpha paths.
-    detail::relabel_duplicates_last_wins(dt, points,
-        [&](unsigned i) { return Point(points(i, 0), points(i, 1), points(i, 2)); });
-
-    // dim 3 (tetrahedra)
-    for (auto cit = dt.finite_cells_begin(); cit != dt.finite_cells_end(); ++cit)
-        add_simplex(std::array<unsigned, 4>{ cit->vertex(0)->info(), cit->vertex(1)->info(),
-                                             cit->vertex(2)->info(), cit->vertex(3)->info() });
-
-    // dim 2 (facets): the 3 vertices of facet (cell, i) are the vertices != i
-    for (auto fit = dt.finite_facets_begin(); fit != dt.finite_facets_end(); ++fit) {
-        typename DT::Cell_handle c = fit->first;
-        int i = fit->second;
-        add_simplex(std::array<unsigned, 3>{ c->vertex((i + 1) & 3)->info(),
-                                             c->vertex((i + 2) & 3)->info(),
-                                             c->vertex((i + 3) & 3)->info() });
-    }
-
-    // dim 1 (edges)
-    for (auto eit = dt.finite_edges_begin(); eit != dt.finite_edges_end(); ++eit)
-        add_simplex(std::array<unsigned, 2>{ eit->first->vertex(eit->second)->info(),
-                                             eit->first->vertex(eit->third)->info() });
-
-    // dim 0 (vertices)
-    for (auto vit = dt.finite_vertices_begin(); vit != dt.finite_vertices_end(); ++vit)
-        add_simplex(std::array<unsigned, 1>{ vit->info() });
-}
-
-template<bool exact, class Points, class SimplexCallback>
-void
-diode::
-fill_delaunay2d(const Points& points, const SimplexCallback& add_simplex)
-{
-    using K     = detail::Kernel<exact>;
-    using Vb    = CGAL::Triangulation_vertex_base_with_info_2<unsigned, K>;
-    using Fb    = CGAL::Triangulation_face_base_with_info_2<double, K>;
-    using TDS   = CGAL::Triangulation_data_structure_2<Vb, Fb>;
-    using DT    = CGAL::Delaunay_triangulation_2<K, TDS>;
-    using Point         = typename DT::Point;
-    using Face_handle   = typename DT::Face_handle;
-    using Vertex_handle = typename DT::Vertex_handle;
-
-    DT Dt;
-    {
-        std::vector<std::pair<Point, unsigned>> pts;
-        pts.reserve(points.size());
-        for (unsigned i = 0; i < points.size(); ++i)
-            pts.emplace_back(Point(points(i, 0), points(i, 1)), i);
-        Dt.insert(pts.begin(), pts.end());   // spatial-sort accelerated; sets info()
-    }
-    detail::relabel_duplicates_last_wins(Dt, points,
-        [&](unsigned i) { return Point(points(i, 0), points(i, 1)); });
-
-    // dim 2 (triangles)
-    for (auto fit = Dt.finite_faces_begin(); fit != Dt.finite_faces_end(); ++fit)
-        add_simplex(std::array<unsigned, 3>{ fit->vertex(0)->info(),
-                                             fit->vertex(1)->info(),
-                                             fit->vertex(2)->info() });
-
-    // dim 1 (edges): the 2 vertices of edge (face, i) are the vertices != i
-    for (auto eit = Dt.finite_edges_begin(); eit != Dt.finite_edges_end(); ++eit) {
-        Face_handle f = eit->first;
-        int i = eit->second;
-        Vertex_handle vv[2];
-        int k = 0;
-        for (int j = 0; j < 3; ++j)
-            if (j != i) vv[k++] = f->vertex(j);
-        add_simplex(std::array<unsigned, 2>{ vv[0]->info(), vv[1]->info() });
-    }
-
-    // dim 0 (vertices)
-    for (auto vit = Dt.finite_vertices_begin(); vit != Dt.finite_vertices_end(); ++vit)
-        add_simplex(std::array<unsigned, 1>{ vit->info() });
-}
-
-template<bool exact, class Points, class SimplexCallback>
-void
-diode::
-fill_periodic_delaunay2d(const Points& points, const SimplexCallback& add_simplex,
-                         std::array<double, 2> from, std::array<double, 2> to)
-{
-    using K             = detail::Kernel<exact>;
-    using GT            = CGAL::Periodic_2_Delaunay_triangulation_traits_2<K>;
-    using PDelaunay2D   = CGAL::Periodic_2_Delaunay_triangulation_2<GT>;
-    using Vertex_handle = typename PDelaunay2D::Vertex_handle;
-    using Point         = typename PDelaunay2D::Point;
-    using Face_handle   = typename PDelaunay2D::Face_handle;
-    using Iso_rectangle = typename PDelaunay2D::Iso_rectangle;
-
-    using ASPointMap = std::unordered_map<Vertex_handle, unsigned>;
-
-    Iso_rectangle domain(from[0], from[1], to[0], to[1]);
-    PDelaunay2D pdt(domain);
-    ASPointMap point_map;
-    for (unsigned i = 0; i < points.size(); ++i)
-        point_map[pdt.insert(Point(points(i, 0), points(i, 1)))] = i;
-
-    if (pdt.is_triangulation_in_1_sheet())
-        pdt.convert_to_1_sheeted_covering();
-    else
-        throw std::runtime_error("Cannot convert to 1-sheeted covering");
-
-    // Periodic CGAL can report a canonical simplex (by input-index set) more than
-    // once under different offsets; dedup by vertex-index set, matching the
-    // periodic alpha paths (each index simplex emitted exactly once).
-    struct Key3 { unsigned a, b, c; bool operator==(const Key3& o) const { return a == o.a && b == o.b && c == o.c; } };
-    struct Key3Hash { std::size_t operator()(const Key3& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; h = h * 1000003u ^ k.c; return h; } };
-    auto key3 = [](unsigned a, unsigned b, unsigned c) { if (a > b) std::swap(a, b); if (b > c) std::swap(b, c); if (a > b) std::swap(a, b); return Key3{a, b, c}; };
-    struct Key2 { unsigned a, b; bool operator==(const Key2& o) const { return a == o.a && b == o.b; } };
-    struct Key2Hash { std::size_t operator()(const Key2& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; return h; } };
-    auto key2 = [](unsigned a, unsigned b) { if (a > b) std::swap(a, b); return Key2{a, b}; };
-
-    // faces (triangles)
-    std::unordered_set<Key3, Key3Hash> faces;
-    for (auto cur = pdt.finite_faces_begin(); cur != pdt.finite_faces_end(); ++cur) {
-        Key3 k = key3(point_map[cur->vertex(0)], point_map[cur->vertex(1)], point_map[cur->vertex(2)]);
-        if (faces.insert(k).second)
-            add_simplex(std::array<unsigned, 3>{ k.a, k.b, k.c });
-    }
-
-    // edges: the 2 vertices of edge (face, ei) are the vertices != ei
-    std::unordered_set<Key2, Key2Hash> edges;
-    for (auto cur = pdt.finite_edges_begin(); cur != pdt.finite_edges_end(); ++cur) {
-        auto e = *cur;
-        Face_handle f = e.first;
-        int ei = e.second;
-        unsigned idx[2];
-        int j = 0;
-        for (int i = 0; i < 3; ++i)
-            if (i != ei) idx[j++] = point_map[f->vertex(i)];
-        Key2 k = key2(idx[0], idx[1]);
-        if (edges.insert(k).second)
-            add_simplex(std::array<unsigned, 2>{ k.a, k.b });
-    }
-
-    // vertices (dedup by index; each input point is one canonical vertex)
-    std::vector<char> seen_v(points.size(), 0);
-    for (auto cur = pdt.finite_vertices_begin(); cur != pdt.finite_vertices_end(); ++cur) {
-        for (int i = 0; i < 3; ++i) {
-            auto vh = cur->face()->vertex(i);
-            if (vh != Vertex_handle() && vh->point() == cur->point()) {
-                unsigned idx = point_map[vh];
-                if (idx < seen_v.size() && !seen_v[idx]) { seen_v[idx] = 1; add_simplex(std::array<unsigned, 1>{ idx }); }
-                break;
-            }
-        }
-    }
-}
-
-template<bool exact, class Points, class SimplexCallback>
-void
-diode::
-fill_periodic_delaunay2d_lifts(const Points& points, const SimplexCallback& add_simplex,
-                               std::array<double, 2> from, std::array<double, 2> to)
-{
-    using K             = detail::Kernel<exact>;
-    using GT            = CGAL::Periodic_2_Delaunay_triangulation_traits_2<K>;
-    using PDelaunay2D   = CGAL::Periodic_2_Delaunay_triangulation_2<GT>;
-    using Vertex_handle = typename PDelaunay2D::Vertex_handle;
-    using Point         = typename PDelaunay2D::Point;
-    using Face_handle   = typename PDelaunay2D::Face_handle;
-    using Iso_rectangle = typename PDelaunay2D::Iso_rectangle;
-    using ASPointMap    = std::unordered_map<Vertex_handle, unsigned>;
-
-    Iso_rectangle domain(from[0], from[1], to[0], to[1]);
-    PDelaunay2D pdt(domain);
-    ASPointMap point_map;
-    for (unsigned i = 0; i < points.size(); ++i)
-        point_map[pdt.insert(Point(points(i, 0), points(i, 1)))] = i;
-
-    // CGAL reports periodic offsets only after this conversion to a finite
-    // fundamental-domain traversal. is_triangulation_in_1_sheet() certifies
-    // that the same periodic complex is valid in one sheet; conversion removes
-    // CGAL's 9-sheet replicas, so the iterators below yield one representative
-    // of each simplex without application-level deduplication.
-    if (pdt.is_triangulation_in_1_sheet())
-        pdt.convert_to_1_sheeted_covering();
-    else
-        throw std::runtime_error("Cannot convert to 1-sheeted covering");
-
-    auto vertex_id = [&](Vertex_handle vertex) {
-        auto it = point_map.find(vertex);
-        if (it == point_map.end())
-            throw std::runtime_error("Periodic vertex lost its input index during one-sheet conversion");
-        return it->second;
-    };
-
-    using Offsets1 = std::array<std::array<int, 2>, 1>;
-    using Offsets2 = std::array<std::array<int, 2>, 2>;
-    using Offsets3 = std::array<std::array<int, 2>, 3>;
-    std::unordered_map<std::array<unsigned, 1>, Offsets1, detail::UnsignedArrayHash<1>> seen_vertices;
-    std::unordered_map<std::array<unsigned, 2>, Offsets2, detail::UnsignedArrayHash<2>> seen_edges;
-    std::unordered_map<std::array<unsigned, 3>, Offsets3, detail::UnsignedArrayHash<3>> seen_faces;
-
-    for (auto fit = pdt.finite_faces_begin(); fit != pdt.finite_faces_end(); ++fit) {
-        std::array<unsigned, 3> vertices;
-        Offsets3 offsets;
-        for (int i = 0; i < 3; ++i) {
-            vertices[i] = vertex_id(fit->vertex(i));
-            auto periodic_point = pdt.periodic_point(fit, i);
-            offsets[i] = { periodic_point.second[0], periodic_point.second[1] };
-        }
-        detail::emit_periodic_lift(vertices, offsets, seen_faces, add_simplex);
-    }
-
-    for (auto eit = pdt.finite_edges_begin(); eit != pdt.finite_edges_end(); ++eit) {
-        Face_handle face = eit->first;
-        int opposite = eit->second;
-        std::array<unsigned, 2> vertices;
-        Offsets2 offsets;
-        int j = 0;
-        for (int i = 0; i < 3; ++i) {
-            if (i == opposite)
-                continue;
-            vertices[j] = vertex_id(face->vertex(i));
-            auto periodic_point = pdt.periodic_point(face, i);
-            offsets[j] = { periodic_point.second[0], periodic_point.second[1] };
-            ++j;
-        }
-        detail::emit_periodic_lift(vertices, offsets, seen_edges, add_simplex);
-    }
-
-    for (auto vit = pdt.finite_vertices_begin(); vit != pdt.finite_vertices_end(); ++vit) {
-        Vertex_handle vertex = vit;
-        auto periodic_point = pdt.periodic_point(vertex);
-        detail::emit_periodic_lift(
-            std::array<unsigned, 1>{ vertex_id(vertex) },
-            Offsets1{ std::array<int, 2>{ periodic_point.second[0], periodic_point.second[1] } },
-            seen_vertices,
-            add_simplex);
-    }
-}
-
-template<bool exact>
-template<class Points, class SimplexCallback>
-void
-diode::AlphaShapes<exact>::
-fill_periodic_delaunay(const Points& points, const SimplexCallback& add_simplex,
-                       std::array<double, 3> from, std::array<double, 3> to)
-{
-    using K      = detail::Kernel<exact>;
-    using PK     = CGAL::Periodic_3_Delaunay_triangulation_traits_3<K>;
-    using DsVb   = CGAL::Periodic_3_triangulation_ds_vertex_base_3<>;
-    using Vb     = CGAL::Triangulation_vertex_base_3<PK, DsVb>;
-    using VbInfo = CGAL::Triangulation_vertex_base_with_info_3<unsigned, PK, Vb>;
-    using DsCb   = CGAL::Periodic_3_triangulation_ds_cell_base_3<>;
-    using Cb     = CGAL::Triangulation_cell_base_3<PK, DsCb>;
-    using TDS    = CGAL::Triangulation_data_structure_3<VbInfo, Cb>;
-    using PDT    = CGAL::Periodic_3_Delaunay_triangulation_3<PK, TDS>;
-    using Point         = typename PDT::Point;
-    using Vertex_handle = typename PDT::Vertex_handle;
-    using Cell_handle   = typename PDT::Cell_handle;
-
-    // Insert one at a time so we can stash the input index in the vertex info.
-    // (Periodic CGAL has no info-carrying range insert.)
-    PDT pdt(typename PK::Iso_cuboid_3(from[0], from[1], from[2], to[0], to[1], to[2]));
-    for (unsigned i = 0; i < points.size(); ++i) {
-        Vertex_handle vh = pdt.insert(Point(points(i, 0), points(i, 1), points(i, 2)));
-        if (vh != Vertex_handle())
-            vh->info() = i;
-    }
-
-    if (pdt.is_triangulation_in_1_sheet())
-        pdt.convert_to_1_sheeted_covering();
-    else
-        throw std::runtime_error("Cannot convert to 1-sheeted covering");
-
-    // Periodic CGAL reports a canonical simplex (by input-index set) once per
-    // offset; dedup by vertex-index set, matching the periodic alpha paths.
-    struct Key4 { unsigned a, b, c, d; bool operator==(const Key4& o) const { return a == o.a && b == o.b && c == o.c && d == o.d; } };
-    struct Key4Hash { std::size_t operator()(const Key4& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; h = h * 1000003u ^ k.c; h = h * 1000003u ^ k.d; return h; } };
-    auto key4 = [](unsigned a, unsigned b, unsigned c, unsigned d) {
-        unsigned v[4] = { a, b, c, d };
-        std::sort(v, v + 4);
-        return Key4{ v[0], v[1], v[2], v[3] };
-    };
-    struct Key3 { unsigned a, b, c; bool operator==(const Key3& o) const { return a == o.a && b == o.b && c == o.c; } };
-    struct Key3Hash { std::size_t operator()(const Key3& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; h = h * 1000003u ^ k.c; return h; } };
-    auto key3 = [](unsigned a, unsigned b, unsigned c) { if (a > b) std::swap(a, b); if (b > c) std::swap(b, c); if (a > b) std::swap(a, b); return Key3{a, b, c}; };
-    struct Key2 { unsigned a, b; bool operator==(const Key2& o) const { return a == o.a && b == o.b; } };
-    struct Key2Hash { std::size_t operator()(const Key2& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; return h; } };
-    auto key2 = [](unsigned a, unsigned b) { if (a > b) std::swap(a, b); return Key2{a, b}; };
-
-    // dim 3 (tetrahedra): periodic triangulations have no infinite cells
-    std::unordered_set<Key4, Key4Hash> cells;
-    for (auto cit = pdt.cells_begin(); cit != pdt.cells_end(); ++cit) {
-        Key4 k = key4(cit->vertex(0)->info(), cit->vertex(1)->info(),
-                      cit->vertex(2)->info(), cit->vertex(3)->info());
-        if (cells.insert(k).second)
-            add_simplex(std::array<unsigned, 4>{ k.a, k.b, k.c, k.d });
-    }
-
-    // dim 2 (facets): the 3 vertices of facet (cell, i) are the vertices != i
-    std::unordered_set<Key3, Key3Hash> facets;
-    for (auto fit = pdt.facets_begin(); fit != pdt.facets_end(); ++fit) {
-        Cell_handle c = fit->first;
-        int i = fit->second;
-        Key3 k = key3(c->vertex((i + 1) & 3)->info(), c->vertex((i + 2) & 3)->info(),
-                      c->vertex((i + 3) & 3)->info());
-        if (facets.insert(k).second)
-            add_simplex(std::array<unsigned, 3>{ k.a, k.b, k.c });
-    }
-
-    // dim 1 (edges)
-    std::unordered_set<Key2, Key2Hash> edges;
-    for (auto eit = pdt.edges_begin(); eit != pdt.edges_end(); ++eit) {
-        Cell_handle c = eit->first;
-        Key2 k = key2(c->vertex(eit->second)->info(), c->vertex(eit->third)->info());
-        if (edges.insert(k).second)
-            add_simplex(std::array<unsigned, 2>{ k.a, k.b });
-    }
-
-    // dim 0 (vertices): one canonical vertex per input point
-    std::vector<char> seen_v(points.size(), 0);
-    for (auto vit = pdt.vertices_begin(); vit != pdt.vertices_end(); ++vit) {
-        unsigned idx = vit->info();
-        if (idx < seen_v.size() && !seen_v[idx]) { seen_v[idx] = 1; add_simplex(std::array<unsigned, 1>{ idx }); }
-    }
-}
-
-template<bool exact>
-template<class Points, class SimplexCallback>
-void
-diode::AlphaShapes<exact>::
-fill_periodic_delaunay_lifts(const Points& points, const SimplexCallback& add_simplex,
-                             std::array<double, 3> from, std::array<double, 3> to)
-{
-    using K      = detail::Kernel<exact>;
-    using PK     = CGAL::Periodic_3_Delaunay_triangulation_traits_3<K>;
-    using DsVb   = CGAL::Periodic_3_triangulation_ds_vertex_base_3<>;
-    using Vb     = CGAL::Triangulation_vertex_base_3<PK, DsVb>;
-    using VbInfo = CGAL::Triangulation_vertex_base_with_info_3<unsigned, PK, Vb>;
-    using DsCb   = CGAL::Periodic_3_triangulation_ds_cell_base_3<>;
-    using Cb     = CGAL::Triangulation_cell_base_3<PK, DsCb>;
-    using TDS    = CGAL::Triangulation_data_structure_3<VbInfo, Cb>;
-    using PDT    = CGAL::Periodic_3_Delaunay_triangulation_3<PK, TDS>;
-    using Point         = typename PDT::Point;
-    using Vertex_handle = typename PDT::Vertex_handle;
-    using Cell_handle   = typename PDT::Cell_handle;
-
-    PDT pdt(typename PK::Iso_cuboid_3(from[0], from[1], from[2], to[0], to[1], to[2]));
-    for (unsigned i = 0; i < points.size(); ++i) {
-        Vertex_handle vertex = pdt.insert(Point(points(i, 0), points(i, 1), points(i, 2)));
-        if (vertex != Vertex_handle())
-            vertex->info() = i;
-    }
-
-    // CGAL's one-sheet covering exposes the lattice offsets for each simplex
-    // occurrence while keeping the traversal finite. The predicate certifies
-    // that this is a valid simplicial complex; conversion removes the 27-sheet
-    // replicas, leaving one stored representative per simplex for the iterators
-    // below, without application-level deduplication.
-    if (pdt.is_triangulation_in_1_sheet())
-        pdt.convert_to_1_sheeted_covering();
-    else
-        throw std::runtime_error("Cannot convert to 1-sheeted covering");
-
-    using Offsets1 = std::array<std::array<int, 3>, 1>;
-    using Offsets2 = std::array<std::array<int, 3>, 2>;
-    using Offsets3 = std::array<std::array<int, 3>, 3>;
-    using Offsets4 = std::array<std::array<int, 3>, 4>;
-    std::unordered_map<std::array<unsigned, 1>, Offsets1, detail::UnsignedArrayHash<1>> seen_vertices;
-    std::unordered_map<std::array<unsigned, 2>, Offsets2, detail::UnsignedArrayHash<2>> seen_edges;
-    std::unordered_map<std::array<unsigned, 3>, Offsets3, detail::UnsignedArrayHash<3>> seen_facets;
-    std::unordered_map<std::array<unsigned, 4>, Offsets4, detail::UnsignedArrayHash<4>> seen_cells;
-
-    for (auto cit = pdt.cells_begin(); cit != pdt.cells_end(); ++cit) {
-        std::array<unsigned, 4> vertices;
-        Offsets4 offsets;
-        for (int i = 0; i < 4; ++i) {
-            vertices[i] = cit->vertex(i)->info();
-            auto periodic_point = pdt.periodic_point(cit, i);
-            offsets[i] = { periodic_point.second[0], periodic_point.second[1], periodic_point.second[2] };
-        }
-        detail::emit_periodic_lift(vertices, offsets, seen_cells, add_simplex);
-    }
-
-    for (auto fit = pdt.facets_begin(); fit != pdt.facets_end(); ++fit) {
-        Cell_handle cell = fit->first;
-        int opposite = fit->second;
-        std::array<unsigned, 3> vertices;
-        Offsets3 offsets;
-        int j = 0;
-        for (int i = 0; i < 4; ++i) {
-            if (i == opposite)
-                continue;
-            vertices[j] = cell->vertex(i)->info();
-            auto periodic_point = pdt.periodic_point(cell, i);
-            offsets[j] = { periodic_point.second[0], periodic_point.second[1], periodic_point.second[2] };
-            ++j;
-        }
-        detail::emit_periodic_lift(vertices, offsets, seen_facets, add_simplex);
-    }
-
-    for (auto eit = pdt.edges_begin(); eit != pdt.edges_end(); ++eit) {
-        Cell_handle cell = eit->first;
-        std::array<unsigned, 2> vertices {
-            cell->vertex(eit->second)->info(),
-            cell->vertex(eit->third)->info()
-        };
-        auto first = pdt.periodic_point(cell, eit->second);
-        auto second = pdt.periodic_point(cell, eit->third);
-        Offsets2 offsets {
-            std::array<int, 3>{ first.second[0], first.second[1], first.second[2] },
-            std::array<int, 3>{ second.second[0], second.second[1], second.second[2] }
-        };
-        detail::emit_periodic_lift(vertices, offsets, seen_edges, add_simplex);
-    }
-
-    for (auto vit = pdt.vertices_begin(); vit != pdt.vertices_end(); ++vit) {
-        auto periodic_point = pdt.periodic_point(vit);
-        detail::emit_periodic_lift(
-            std::array<unsigned, 1>{ vit->info() },
-            Offsets1{ std::array<int, 3>{ periodic_point.second[0], periodic_point.second[1], periodic_point.second[2] } },
-            seen_vertices,
-            add_simplex);
-    }
-}
-
-template<bool exact>
-template<class Points, class SimplexCallback>
-void
-diode::AlphaShapes<exact>::
-fill_weighted_delaunay(const Points& points, const SimplexCallback& add_simplex)
-{
-    using K     = detail::Kernel<exact>;
-    using Vb0   = CGAL::Regular_triangulation_vertex_base_3<K>;
-    using Vb    = CGAL::Triangulation_vertex_base_with_info_3<unsigned, K, Vb0>;
-    using Cb    = CGAL::Regular_triangulation_cell_base_3<K>;
-    using TDS   = CGAL::Triangulation_data_structure_3<Vb, Cb>;
-    using RT    = CGAL::Regular_triangulation_3<K, TDS>;
-    using Weighted_point = typename RT::Weighted_point;
-    using Bare_point     = typename RT::Bare_point;
-
-    RT rt;
-    {
-        std::vector<std::pair<Weighted_point, unsigned>> wpts;
-        wpts.reserve(points.size());
-        for (unsigned i = 0; i < points.size(); ++i)
-            wpts.emplace_back(Weighted_point(Bare_point(points(i, 0), points(i, 1), points(i, 2)),
-                                             points(i, 3)), i);
-        rt.insert(wpts.begin(), wpts.end());
-    }
-    detail::relabel_duplicates_last_wins(rt, points, [&](unsigned i) {
-        return Weighted_point(Bare_point(points(i, 0), points(i, 1), points(i, 2)), points(i, 3)); });
-
-    // dim 3 (tetrahedra)
-    for (auto cit = rt.finite_cells_begin(); cit != rt.finite_cells_end(); ++cit)
-        add_simplex(std::array<unsigned, 4>{ cit->vertex(0)->info(), cit->vertex(1)->info(),
-                                             cit->vertex(2)->info(), cit->vertex(3)->info() });
-    // dim 2 (facets)
-    for (auto fit = rt.finite_facets_begin(); fit != rt.finite_facets_end(); ++fit) {
-        typename RT::Cell_handle c = fit->first;
-        int i = fit->second;
-        add_simplex(std::array<unsigned, 3>{ c->vertex((i + 1) & 3)->info(),
-                                             c->vertex((i + 2) & 3)->info(),
-                                             c->vertex((i + 3) & 3)->info() });
-    }
-    // dim 1 (edges)
-    for (auto eit = rt.finite_edges_begin(); eit != rt.finite_edges_end(); ++eit)
-        add_simplex(std::array<unsigned, 2>{ eit->first->vertex(eit->second)->info(),
-                                             eit->first->vertex(eit->third)->info() });
-    // dim 0 (vertices)
-    for (auto vit = rt.finite_vertices_begin(); vit != rt.finite_vertices_end(); ++vit)
-        add_simplex(std::array<unsigned, 1>{ vit->info() });
-}
-
-#if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
-template<bool exact>
-template<class Points, class SimplexCallback>
-void
-diode::AlphaShapes<exact>::
-fill_weighted_periodic_delaunay(const Points& points, const SimplexCallback& add_simplex,
-                                std::array<double, 3> from, std::array<double, 3> to)
-{
-    using K      = detail::Kernel<exact>;
-    using PK     = CGAL::Periodic_3_regular_triangulation_traits_3<K>;
-    using DsVb   = CGAL::Periodic_3_triangulation_ds_vertex_base_3<>;
-    using Vb     = CGAL::Regular_triangulation_vertex_base_3<PK, DsVb>;
-    using VbInfo = CGAL::Triangulation_vertex_base_with_info_3<unsigned, PK, Vb>;
-    using DsCb   = CGAL::Periodic_3_triangulation_ds_cell_base_3<>;
-    using Cb     = CGAL::Regular_triangulation_cell_base_3<PK, DsCb>;
-    using TDS    = CGAL::Triangulation_data_structure_3<VbInfo, Cb>;
-    using PRT    = CGAL::Periodic_3_regular_triangulation_3<PK, TDS>;
-    using Weighted_point = typename PRT::Weighted_point;
-    using Bare_point     = typename PRT::Bare_point;
-    using Cell_handle    = typename PRT::Cell_handle;
-
-    double domain_size = to[0] - from[0];
-    double upper_bound = 0.015625 * domain_size * domain_size;
-
-    PRT pdt(typename PK::Iso_cuboid_3(from[0], from[1], from[2], to[0], to[1], to[2]));
-    std::map<Weighted_point, unsigned> point_index;
-    for (unsigned i = 0; i < points.size(); ++i) {
-        double w = points(i, 3);
-        if (w < 0 || w >= upper_bound) {
-            std::ostringstream oss;
-            oss << "Point weight w must satisfy: 0 <= w < 1/64 * domain_size * domain_size; but got point"
-                << " (" << points(i, 0) << ", " << points(i, 1) << ", " << points(i, 2) << ") weight = " << w;
-            throw std::runtime_error(oss.str());
-        }
-        point_index[Weighted_point(Bare_point(points(i, 0), points(i, 1), points(i, 2)), w)] = i;
-    }
-    {
-        std::vector<Weighted_point> wpts;
-        wpts.reserve(point_index.size());
-        for (const auto& kv : point_index)
-            wpts.push_back(kv.first);
-        pdt.insert(wpts.begin(), wpts.end(), true);
-    }
-    if (pdt.is_triangulation_in_1_sheet())
-        pdt.convert_to_1_sheeted_covering();
-    else
-        throw std::runtime_error("Cannot convert to 1-sheeted covering");
-
-    constexpr unsigned k_no_index = static_cast<unsigned>(-1);
-    for (auto vit = pdt.vertices_begin(); vit != pdt.vertices_end(); ++vit) {
-        auto it = point_index.find(vit->point());
-        vit->info() = (it != point_index.end()) ? it->second : k_no_index;
-    }
-
-    struct Key4 { unsigned a, b, c, d; bool operator==(const Key4& o) const { return a == o.a && b == o.b && c == o.c && d == o.d; } };
-    struct Key4Hash { std::size_t operator()(const Key4& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; h = h * 1000003u ^ k.c; h = h * 1000003u ^ k.d; return h; } };
-    auto key4 = [](unsigned a, unsigned b, unsigned c, unsigned d) { unsigned v[4] = { a, b, c, d }; std::sort(v, v + 4); return Key4{ v[0], v[1], v[2], v[3] }; };
-    struct Key3 { unsigned a, b, c; bool operator==(const Key3& o) const { return a == o.a && b == o.b && c == o.c; } };
-    struct Key3Hash { std::size_t operator()(const Key3& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; h = h * 1000003u ^ k.c; return h; } };
-    auto key3 = [](unsigned a, unsigned b, unsigned c) { if (a > b) std::swap(a, b); if (b > c) std::swap(b, c); if (a > b) std::swap(a, b); return Key3{a, b, c}; };
-    struct Key2 { unsigned a, b; bool operator==(const Key2& o) const { return a == o.a && b == o.b; } };
-    struct Key2Hash { std::size_t operator()(const Key2& k) const { std::size_t h = k.a; h = h * 1000003u ^ k.b; return h; } };
-    auto key2 = [](unsigned a, unsigned b) { if (a > b) std::swap(a, b); return Key2{a, b}; };
-    auto bad = [&](std::initializer_list<unsigned> xs) { for (unsigned x : xs) if (x == k_no_index) return true; return false; };
-
-    std::unordered_set<Key4, Key4Hash> cells;
-    for (auto cit = pdt.cells_begin(); cit != pdt.cells_end(); ++cit) {
-        unsigned i0 = cit->vertex(0)->info(), i1 = cit->vertex(1)->info(),
-                 i2 = cit->vertex(2)->info(), i3 = cit->vertex(3)->info();
-        if (bad({i0, i1, i2, i3})) continue;
-        Key4 k = key4(i0, i1, i2, i3);
-        if (cells.insert(k).second) add_simplex(std::array<unsigned, 4>{ k.a, k.b, k.c, k.d });
-    }
-    std::unordered_set<Key3, Key3Hash> facets;
-    for (auto fit = pdt.facets_begin(); fit != pdt.facets_end(); ++fit) {
-        Cell_handle c = fit->first;
-        int i = fit->second;
-        unsigned f0 = c->vertex((i + 1) & 3)->info(), f1 = c->vertex((i + 2) & 3)->info(), f2 = c->vertex((i + 3) & 3)->info();
-        if (bad({f0, f1, f2})) continue;
-        Key3 k = key3(f0, f1, f2);
-        if (facets.insert(k).second) add_simplex(std::array<unsigned, 3>{ k.a, k.b, k.c });
-    }
-    std::unordered_set<Key2, Key2Hash> edges;
-    for (auto eit = pdt.edges_begin(); eit != pdt.edges_end(); ++eit) {
-        Cell_handle c = eit->first;
-        unsigned e0 = c->vertex(eit->second)->info(), e1 = c->vertex(eit->third)->info();
-        if (bad({e0, e1})) continue;
-        Key2 k = key2(e0, e1);
-        if (edges.insert(k).second) add_simplex(std::array<unsigned, 2>{ k.a, k.b });
-    }
-    std::vector<char> seen_v(points.size(), 0);
-    for (auto vit = pdt.vertices_begin(); vit != pdt.vertices_end(); ++vit) {
-        unsigned idx = vit->info();
-        if (idx < seen_v.size() && !seen_v[idx]) { seen_v[idx] = 1; add_simplex(std::array<unsigned, 1>{ idx }); }
-    }
-}
-#endif
+} // namespace diode

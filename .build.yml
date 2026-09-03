@@ -6,8 +6,6 @@ triggers:
 packages:
   - cmake
   - python
-  - boost
-  - cgal
   - python-numpy
   - python-pytest
 sources:

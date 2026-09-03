@@ -7,11 +7,7 @@ namespace py = pybind11;
 
 #include <diode/diode.h>
 
-// Validate a periodic box before it reaches CGAL: it must have at least `dim`
-// entries and a strictly positive extent on every axis. Otherwise CGAL's
-// Iso_cuboid_3/Iso_rectangle is empty or inverted and the triangulation crashes
-// the interpreter deep inside (no Python exception). Works for std::vector and
-// std::array operands.
+// Validate a periodic box before constructing the Geogram triangulation.
 template<class Vec>
 static void check_periodic_domain(const Vec& from_, const Vec& to_, std::size_t dim)
 {
@@ -335,7 +331,6 @@ fill_periodic_alpha_shapes_arrays(py::array a, bool exact, std::vector<double> f
     return pack_simplex_arrays(verts, vals);
 }
 
-#if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
 // weighted periodic (4-column) value-carrying traversal: mirrors
 // run_weighted_periodic_delaunay_traversal but calls the weighted periodic alpha
 // direct function.
@@ -367,7 +362,6 @@ fill_weighted_periodic_alpha_shapes_arrays(py::array a, bool exact, std::vector<
     run_weighted_periodic_alpha_direct_traversal(a, exact, from_, to_, AddSimplexArrays { &verts, &vals });
     return pack_simplex_arrays(verts, vals);
 }
-#endif
 
 // ===========================================================================
 // Combinatorics-only Delaunay exporters (no alpha values). Same shape as the
@@ -668,7 +662,6 @@ fill_weighted_delaunay(py::array a, bool exact)
     return py::cast(f);
 }
 
-#if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
 template<class Cb>
 void run_weighted_periodic_delaunay_traversal(py::array a, bool exact,
                                               std::vector<double> from_, std::vector<double> to_, const Cb& cb)
@@ -712,11 +705,9 @@ fill_weighted_periodic_delaunay(py::array a, bool exact, std::vector<double> fro
     run_weighted_periodic_delaunay_traversal(a, exact, from_, to_, AddSimplexNoVal { &f });
     return py::cast(f);
 }
-#endif
 
-// Slow == true selects the reference implementations kept for testing
-// (CGAL::Alpha_shape_3 in 3D, the std::set-based path in 2D). Slow == false
-// selects the fast Delaunay-direct paths. if constexpr keeps both compiled.
+// Slow remains as a compatibility/testing entry point. Both paths use the
+// same Geogram implementation.
 template<bool Slow, bool Exact, class T>
 void run_alpha(const py::array& a, AddSimplex::Simplices& f, bool is2d)
 {
@@ -787,8 +778,7 @@ py::object
 fill_alpha_shape_slow(py::array a, bool exact, bool with_attachment)
 { return fill_alpha_shape_impl<true>(a, exact, with_attachment); }
 
-// Slow == true selects the CGAL::Alpha_shape_3 reference (on the regular
-// triangulation); Slow == false the fast weighted Delaunay-direct path.
+// Slow remains as a compatibility alias for the Geogram implementation.
 template<bool Slow>
 py::object
 fill_weighted_alpha_shape_impl(py::array a, bool exact, bool with_attachment)
@@ -834,9 +824,7 @@ py::object
 fill_weighted_alpha_shape_slow(py::array a, bool exact, bool with_attachment)
 { return fill_weighted_alpha_shape_impl<true>(a, exact, with_attachment); }
 
-// Slow == true selects the reference 2D periodic path (std::set); Slow == false
-// the fast Delaunay-direct one. 3D periodic still uses CGAL::Alpha_shape_3 for
-// both (no direct 3D periodic path yet).
+// Slow remains as a compatibility alias for the Geogram implementation.
 template<bool Slow>
 py::object
 fill_periodic_alpha_shape_impl(py::array a, bool exact, std::vector<double> from_, std::vector<double> to_, bool with_attachment)
@@ -901,9 +889,6 @@ py::object
 fill_periodic_alpha_shape_slow(py::array a, bool exact, std::vector<double> from_, std::vector<double> to_, bool with_attachment)
 { return fill_periodic_alpha_shape_impl<true>(a, exact, from_, to_, with_attachment); }
 
-#if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
-// Slow == true selects CGAL::Alpha_shape_3 on the periodic regular triangulation;
-// Slow == false the fast weighted periodic Delaunay-direct path.
 template<bool Slow>
 py::object
 fill_weighted_periodic_alpha_shape_impl(py::array a, bool exact, std::array<double,3> from, std::array<double,3> to, bool with_attachment)
@@ -949,7 +934,6 @@ fill_weighted_periodic_alpha_shape(py::array a, bool exact, std::array<double,3>
 py::object
 fill_weighted_periodic_alpha_shape_slow(py::array a, bool exact, std::array<double,3> from, std::array<double,3> to, bool with_attachment)
 { return fill_weighted_periodic_alpha_shape_impl<true>(a, exact, from, to, with_attachment); }
-#endif
 
 py::array
 circumcenter(py::array a, bool exact)
@@ -1014,9 +998,7 @@ PYBIND11_MODULE(diode, m)
           "to this path. Use exact=True for guaranteed correct results on such input.");
     m.def("fill_alpha_shapes_slow",  &fill_alpha_shape_slow,
           "data"_a, "exact"_a = false, "with_attachment"_a = false,
-          "Reference implementation of fill_alpha_shapes kept for testing: 3D uses\n"
-          "CGAL::Alpha_shape_3, 2D the std::set-based path. Same result as\n"
-          "fill_alpha_shapes but much slower; used to cross-check the fast path.");
+          "Compatibility alias of fill_alpha_shapes.");
     m.def("fill_alpha_shapes_arrays", &fill_alpha_shapes_arrays,
           "data"_a, "exact"_a = false,
           "Alpha shape filtration as per-dimension NumPy arrays: returns\n"
@@ -1072,7 +1054,6 @@ PYBIND11_MODULE(diode, m)
           "data"_a, "exact"_a = false,
           "Weighted Delaunay (regular triangulation) simplices as a flat list of vertex\n"
           "lists, WITHOUT alpha values. List form of fill_weighted_delaunay_arrays.");
-#if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
     m.def("fill_weighted_periodic_delaunay_arrays", &fill_weighted_periodic_delaunay_arrays,
           "data"_a, "exact"_a = false,
           "from"_a = std::vector<double> {0.,0.,0.},
@@ -1085,7 +1066,6 @@ PYBIND11_MODULE(diode, m)
           "to"_a   = std::vector<double> {1.,1.,1.},
           "Periodic weighted Delaunay simplices as a flat list of vertex lists, WITHOUT\n"
           "alpha values. List form of fill_weighted_periodic_delaunay_arrays.");
-#endif
     m.def("fill_weighted_alpha_shapes",  &fill_weighted_alpha_shape,
           "data"_a, "exact"_a = false, "with_attachment"_a = false,
           "returns (sorted) alpha shape filtration of the weighted input points "
@@ -1094,9 +1074,7 @@ PYBIND11_MODULE(diode, m)
           "not yet supported.");
     m.def("fill_weighted_alpha_shapes_slow",  &fill_weighted_alpha_shape_slow,
           "data"_a, "exact"_a = false, "with_attachment"_a = false,
-          "Reference implementation of fill_weighted_alpha_shapes kept for testing: "
-          "uses CGAL::Alpha_shape_3 on the regular triangulation. Same result as "
-          "fill_weighted_alpha_shapes but slower.");
+          "Compatibility alias of fill_weighted_alpha_shapes.");
     m.def("fill_weighted_alpha_shapes_arrays", &fill_weighted_alpha_shapes_arrays,
           "data"_a, "exact"_a = false,
           "Weighted alpha shape filtration as per-dimension NumPy arrays, for a\n"
@@ -1116,8 +1094,7 @@ PYBIND11_MODULE(diode, m)
           "from"_a = std::vector<double> {0.,0.,0.},
           "to"_a   = std::vector<double> {1.,1.,1.},
           "with_attachment"_a = false,
-          "Reference periodic alpha filtration kept for testing: 2D uses the\n"
-          "std::set-based path (3D uses CGAL::Alpha_shape_3, same as the fast one).");
+          "Compatibility alias of fill_periodic_alpha_shapes.");
     m.def("fill_periodic_alpha_shapes_arrays", &fill_periodic_alpha_shapes_arrays,
           "data"_a, "exact"_a = false,
           "from"_a = std::vector<double> {0.,0.,0.},
@@ -1128,23 +1105,19 @@ PYBIND11_MODULE(diode, m)
           "values. Arrays form of fill_periodic_alpha_shapes; each canonical simplex is\n"
           "emitted once. Unsorted within each dimension. Raises if the cloud is not\n"
           "representable in one sheet of the periodic covering.");
-#if (CGAL_VERSION_MAJOR == 4 && CGAL_VERSION_MINOR >= 11) || (CGAL_VERSION_MAJOR > 4)
     m.def("fill_weighted_periodic_alpha_shapes",  &fill_weighted_periodic_alpha_shape,
           "data"_a, "exact"_a = false,
           "from"_a = std::array<double,3> {0.,0.,0.},
           "to"_a   = std::array<double,3> {1.,1.,1.},
           "with_attachment"_a = false,
-          "returns (sorted) alpha shape filtration of the weighted input points on a "
-          "periodic domain. Uses the fast weighted periodic Delaunay-direct path "
-          "(Periodic_3_regular_triangulation_3 + Edelsbrunner). with_attachment=True "
-          "is not yet supported.");
+          "returns (sorted) alpha shape filtration of weighted input points on "
+          "a periodic domain. with_attachment=True is not yet supported.");
     m.def("fill_weighted_periodic_alpha_shapes_slow",  &fill_weighted_periodic_alpha_shape_slow,
           "data"_a, "exact"_a = false,
           "from"_a = std::array<double,3> {0.,0.,0.},
           "to"_a   = std::array<double,3> {1.,1.,1.},
           "with_attachment"_a = false,
-          "Reference implementation of fill_weighted_periodic_alpha_shapes kept for "
-          "testing: uses CGAL::Alpha_shape_3 on the periodic regular triangulation.");
+          "Compatibility alias of fill_weighted_periodic_alpha_shapes.");
     m.def("fill_weighted_periodic_alpha_shapes_arrays", &fill_weighted_periodic_alpha_shapes_arrays,
           "data"_a, "exact"_a = false,
           "from"_a = std::vector<double> {0.,0.,0.},
@@ -1156,6 +1129,5 @@ PYBIND11_MODULE(diode, m)
           "fill_weighted_periodic_alpha_shapes; each canonical simplex is emitted once.\n"
           "Unsorted within each dimension. Raises if the cloud is not representable in\n"
           "one sheet of the periodic covering.");
-#endif
     m.def("circumcenter", &circumcenter, "points"_a, "exact"_a = false, "returns circumcenter of the intput points");
 }
