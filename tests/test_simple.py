@@ -70,12 +70,7 @@ def test_periodic():
 # ---- with_attachment tests --------------------------------------------------
 
 def _circumradius_squared(point_coords):
-    """Squared circumradius of a simplex from its vertex coordinates.
-
-    point_coords: (k, d) array, k in {1,2,3,4}, d in {2,3}.
-    Returns the squared smallest enclosing sphere through all k points,
-    matching CGAL's squared_radius for the same inputs.
-    """
+    """Squared circumradius of a simplex from its vertex coordinates."""
     pc = np.asarray(point_coords, dtype=np.float64)
     k, d = pc.shape
     if k == 1:
@@ -170,10 +165,8 @@ def test_cube_attachment_specific():
         assert abs(alpha - 0.25) < 1e-12
         assert tuple(tau) == short_edge
 
-    # Long edges (length sqrt(2)): alpha=0.5. For this configuration the
-    # third tetrahedron vertex lies exactly on the edge's MEB boundary, so
-    # CGAL classifies these edges as Gabriel and the recompute is trivially
-    # consistent with tau == sigma.
+    # Long edges (length sqrt(2)): alpha=0.5. The third tetrahedron vertex lies
+    # exactly on each edge's MEB boundary.
     for long_edge in [(1, 2), (1, 3), (2, 3)]:
         alpha, tau = by_sigma[long_edge]
         assert abs(alpha - 0.5) < 1e-12
@@ -201,14 +194,7 @@ def test_cube_attachment_specific():
 
 
 def _close(a, b, rtol=1e-7, atol=1e-9):
-    """Hybrid relative/absolute tolerance.
-
-    Random Delaunay configurations contain near-flat tetrahedra with huge
-    circumradii where the linear-algebra recompute and CGAL's geometric
-    formula can diverge by several units in the last few digits of a large
-    value. The user's downstream PyTorch implementation will use a different
-    formula too, so we validate approximate agreement, not bit-equality.
-    """
+    """Hybrid relative/absolute tolerance for near-flat configurations."""
     return abs(a - b) <= atol + rtol * abs(a)
 
 

@@ -95,10 +95,8 @@ def test_delaunay_functions_exist():
 
 
 def test_delaunay_degenerate_3d_emits_lower_dim_complex():
-    # Coplanar 3D input: fill_alpha_shapes returns nothing (CGAL::Alpha_shape_3
-    # needs a full-dimensional triangulation), but fill_delaunay emits the real
-    # lower-dimensional Delaunay complex -- the two intentionally differ here, as
-    # documented. (Pins the behavior the docstrings were corrected to describe.)
+    # Alpha filtration requires full-dimensional cells, while the combinatorics
+    # exporter preserves the lower-dimensional Delaunay complex.
     pts = np.array([[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [1., 1., 0.]])  # 4 coplanar
     assert diode.fill_alpha_shapes(pts) == []
     dl = diode.fill_delaunay(pts)

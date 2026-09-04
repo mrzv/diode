@@ -89,10 +89,7 @@ def test_weighted_alpha_arrays_match_list(n, exact):
 
 
 def test_weighted_alpha_arrays_degenerate_matches_list():
-    # Coplanar 4-column input is < 3D: the direct path defers to the reference
-    # (CGAL::Alpha_shape_3, which needs a full-dimensional triangulation), so both
-    # the list and the arrays form come back empty. Pins that the fallback flows
-    # through the arrays sink too.
+    # Coplanar weighted 3D alpha input has no full-dimensional cells.
     data = np.array([[0., 0., 0., 0.01], [1., 0., 0., 0.02],
                      [0., 1., 0., 0.0], [1., 1., 0., 0.03], [0.5, 0.5, 0., 0.01]])
     listed = list_value_dict(diode.fill_weighted_alpha_shapes(data))
@@ -121,14 +118,12 @@ def test_periodic_alpha_arrays_match_list(dim, exact):
                 diode.fill_periodic_alpha_shapes_arrays(pts, exact, frm, to)
             continue
         arrays = arrays_value_dict(diode.fill_periodic_alpha_shapes_arrays(pts, exact, frm, to))
-        # 2D periodic has the run-to-run offset ambiguity; 3D uses CGAL is_Gabriel
-        # (offset-resolving), so the same direct path agrees to round-off.
+        # List and arrays forms traverse the same offset-aware backend.
         assert_maps_match(arrays, listed, exact=exact, ambiguity=("2d" if dim == 2 else None))
 
 
 # ---- weighted periodic (4-column, 3D) --------------------------------------
-# Weights must satisfy 0 <= w < 1/64 * domain^2 (CGAL's periodic-regular
-# requirement); *0.01 keeps them small. The cloud must be 1-sheet representable.
+# Small weights keep the periodic regular triangulation well-conditioned.
 @pytest.mark.parametrize("n", [1000, 2500])
 @pytest.mark.parametrize("exact", EXACTS)
 def test_weighted_periodic_alpha_arrays_match_list(n, exact):

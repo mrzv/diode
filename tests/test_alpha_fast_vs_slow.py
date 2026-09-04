@@ -1,15 +1,7 @@
-"""Cross-check the fast Delaunay-direct alpha shapes against the slow reference.
+"""Cross-check public compatibility entry points and filtration invariants.
 
-diode.fill_alpha_shapes uses the fast paths (Delaunay_triangulation_3 + direct
-squared-circumradius in 3D; Delaunay_triangulation_2 + face-info circumradius in
-2D). diode.fill_alpha_shapes_slow keeps the original reference implementations
-(CGAL::Alpha_shape_3 in 3D, the std::set-based path in 2D), unchanged, so we can
-compare the two on every run.
-
-We check, over many random clouds (2D/3D, exact True/False):
-  * identical (simplex, alpha) sets,
-  * for with_attachment, that the reported attacher tau is a valid Gabriel coface:
-    squared_circumradius(tau) == alpha(sigma), for BOTH fast and slow.
+The ``*_slow`` functions are retained as aliases after the Geogram migration.
+These tests also validate attachments, periodic complexes, and weighted values.
 """
 from itertools import combinations
 
@@ -202,8 +194,7 @@ def test_periodic_from_to_length_validated():
 
 
 def test_periodic_inverted_domain_raises():
-    # An empty/inverted periodic box (from >= to on some axis) must raise, not
-    # crash the interpreter deep inside CGAL.
+    # Invalid periodic boxes must raise instead of reaching the backend.
     rng = np.random.default_rng(0)
     p3 = rng.random((50, 3))
     p2 = rng.random((50, 2))
@@ -255,12 +246,9 @@ def test_weighted_shared_coords_match_gudhi():
     assert min(fv) == pytest.approx(-0.5, abs=1e-9)   # the kept site has weight 0.5
 
 
-# ---- weighted 3D: fast (Regular_triangulation_3 + Edelsbrunner) vs slow
-# (Alpha_shape_3 on the regular triangulation) ------------------------------
-# Input is a 4-column array (x, y, z, weight). The direct path uses CGAL's
-# Regular_triangulation_3::is_Gabriel -- including is_Gabriel(vertex), since a
-# weighted vertex (unlike an unweighted one) need not be Gabriel -- so the values
-# match Alpha_shape_3 to round-off, not just up to an approximation.
+# ---- weighted 3D: Geogram regular triangulation ----------------------------
+# Input is a 4-column array (x, y, z, weight). Weighted Gabriel tests include
+# vertices because a weighted vertex need not itself be Gabriel.
 @pytest.mark.parametrize("n", [50, 200, 800])
 @pytest.mark.parametrize("exact", EXACTS)
 @pytest.mark.parametrize("wscale", [0.01, 0.1])
@@ -278,14 +266,8 @@ def test_weighted_3d_fast_vs_slow_values(n, exact, wscale):
             f"weighted value mismatch at {k}: fast {fv} slow {sv}")
 
 
-# ---- weighted 3D PERIODIC: fast (Periodic_3_regular_triangulation_3 +
-# Edelsbrunner) vs slow (Alpha_shape_3) -------------------------------------
-# Weights must satisfy 0 <= w < 1/64 * domain^2 (CGAL's periodic-regular
-# requirement). The triangulation must be 1-sheet representable, which needs
-# enough points; the slow path raises otherwise. Like the unweighted periodic
-# case, is_Gabriel handles offsets, so for non-degenerate clouds the values match
-# Alpha_shape_3 to round-off (a few near-degenerate simplices may differ via the
-# periodic Gabriel offset ambiguity).
+# ---- weighted periodic 3D --------------------------------------------------
+# Keep weights small enough for stable one-sheet periodic regular triangulation.
 @pytest.mark.parametrize("n", [1000, 2500])
 @pytest.mark.parametrize("exact", EXACTS)
 def test_weighted_periodic_3d_fast_vs_slow_values(n, exact):
@@ -330,19 +312,12 @@ def test_weighted_periodic_3d_is_valid_complex(n, exact):
                 fa = val.get(tuple(face))
                 assert fa is not None, f"missing face {face} of {verts}"
                 assert fa <= a + 1e-9, f"face {face} value {fa} > coface {verts} value {a}"
-    # NB the 3-torus Euler characteristic is 0 for non-degenerate clouds, but can
-    # be off at the sparse 1-sheet boundary where CGAL drops degenerate vertices;
-    # the set-match-vs-slow test above pins the topology at non-degenerate n.
+    # Sparse periodic complexes can omit vertices not present in a top cell.
 
 
-# ---- periodic 2D: fast (Delaunay-direct) vs slow reference ------------------
-# CGAL's Periodic_2_Delaunay_triangulation_2 has no is_Gabriel, so both 2D periodic
-# paths do a manual Gabriel test -- now made frame-consistent: each incident face's
-# apex is tested against the edge in that face's OWN periodic frame (via
-# pdt.triangle(face)). With that, both paths produce the same correct periodic alpha
-# values (a brute-force tiling confirms it, test_periodic_2d_matches_tiling), so they
-# agree to round-off. (Previously the apex was read un-offset against offset-corrected
-# endpoints, which gave wrong, run-to-run-varying values on boundary-wrapping edges.)
+# ---- periodic 2D: tiled Geogram triangulation ------------------------------
+# The backend triangulates a 3x3 tiling, retaining cells whose circumcenter is
+# in the central domain.
 @pytest.mark.parametrize("n", [20, 100, 500, 1500])
 @pytest.mark.parametrize("exact", EXACTS)
 def test_periodic_2d_fast_vs_slow_values(n, exact):
@@ -415,14 +390,8 @@ def _gudhi_diagram(filtration, dim, gudhi):
     return d[np.isfinite(d).all(axis=1)] if d.size else d   # finite bars only
 
 
-# ---- periodic 3D: fast (Delaunay-direct + CGAL periodic is_Gabriel) vs slow
-# (Alpha_shape_3) ------------------------------------------------------------
-# Unlike the 2D direct path (which does a frame-mixed manual Gabriel test), the
-# 3D direct path uses CGAL's Periodic_3_Delaunay_triangulation_3::is_Gabriel,
-# which handles offsets internally -- the same predicate Alpha_shape_3 uses. So
-# the values agree to ~1e-16, not just up to offset ambiguity. The periodic
-# triangulation must be representable in 1 sheet (needs enough points in 3D);
-# both paths raise the same error otherwise.
+# ---- periodic 3D: tiled Geogram triangulation ------------------------------
+# Both public compatibility paths use the same offset-aware implementation.
 @pytest.mark.parametrize("n", [200, 800, 2000])
 @pytest.mark.parametrize("exact", EXACTS)
 def test_periodic_3d_fast_vs_slow_values(n, exact):
@@ -437,7 +406,7 @@ def test_periodic_3d_fast_vs_slow_values(n, exact):
     fast = to_value_dict(diode.fill_periodic_alpha_shapes(pts, exact, [0.]*3, [1.]*3))
     assert set(fast) == set(slow), "periodic 3D simplex sets differ"
     diffs = np.array([abs(fast[k] - slow[k]) for k in fast])
-    # CGAL is_Gabriel makes the direct values match Alpha_shape_3 to round-off.
+    # Compatibility entry points agree to round-off.
     assert diffs.max(initial=0.0) < 1e-7, \
         f"periodic 3D value difference too large: {diffs.max(initial=0.0):.2e}"
 

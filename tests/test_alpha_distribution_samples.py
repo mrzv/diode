@@ -267,25 +267,8 @@ def test_shape_samples_with_noise_match_slow_inexact(name):
     _assert_filtered_complex(diode.fill_alpha_shapes(points, exact=False))
 
 
-NOISELESS_INEXACT_DEGENERATE = {"sphere", "torus", "triangle"}
-
-
-@pytest.mark.parametrize(
-    "name",
-    [
-        pytest.param(
-            name,
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="noiseless shape sample is degenerate under exact=False",
-            )
-            if name in NOISELESS_INEXACT_DEGENERATE
-            else (),
-        )
-        for name in sorted(SHAPES)
-    ],
-)
-def test_shape_samples_without_noise_inexact_match_slow_when_non_degenerate(name):
+@pytest.mark.parametrize("name", sorted(SHAPES))
+def test_shape_samples_without_noise_match_slow_inexact(name):
     points = SHAPES[name](seed=1200 + len(name))
     fast = _value_dict(diode.fill_alpha_shapes(points, exact=False))
     slow = _value_dict(diode.fill_alpha_shapes_slow(points, exact=False))
