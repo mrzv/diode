@@ -1,14 +1,11 @@
 DioDe
 =====
 
-DioDe uses CGAL to generate alpha shapes filtrations in a format that Dionysus_
-understands. DioDe is not integrated into Dionysus_ because of licensing
-restrictions (Dionysus is under BSD, DioDe is under GPL because of its
-dependence on CGAL). It supports both ordinary and weighted alpha shapes.
+DioDe uses `Geogram <https://github.com/BrunoLevy/geogram>`_ to generate
+ordinary, weighted, and periodic alpha-shape filtrations in a format that
+Dionysus_ understands. Geogram is fetched and built automatically by CMake.
 
-**Dependencies:**
-
-* `CGAL <http://www.cgal.org/>`_
+**Geometry backend:** Geogram 1.9.9 (BSD-3-Clause)
 
 Get, Build, Install
 -------------------
@@ -51,8 +48,8 @@ to your ``~/.bashrc`` or ``~/.zshrc``.
 Usage
 -----
 
-NB: a remark below about `using exact computation <#exactness>`_. This issue is especially important when working with degenerate point sets
-(e.g., repeated copies of a fundamental domain in a periodic point set).
+See the `exactness note <#exactness>`_ below. Robust predicates are especially
+important for degenerate point sets, such as repeated periodic domains.
 
 See `examples/generate_alpha_shape.cpp <https://github.com/mrzv/diode/blob/master/examples/generate_alpha_shape.cpp>`_ and
 `examples/generate_weighted_alpha_shape.cpp <https://github.com/mrzv/diode/blob/master/examples/generate_weighted_alpha_shape.cpp>`_ for C++ examples.
@@ -102,9 +99,7 @@ The list can be passed to Dionysus_ to initialize a filtration::
 
 DioDe also includes ``diode.fill_periodic_alpha_shapes(...)``, which generates
 the alpha shape for a point set on a periodic cube, by default ``[0,0,0]
-- [1,1,1]``. (In the periodic case, it may happen that CGAL reports each
-simplex multiple times. However, passing the result to
-``dionysus.Filtration`` will take care of the duplicates.)::
+- [1,1,1]``. Canonical simplices are emitted once.
 
     >>> simplices_periodic = diode.fill_periodic_alpha_shapes(points)
     >>> f_periodic = dionysus.Filtration(simplices_periodic)
@@ -126,9 +121,8 @@ simplex multiple times. However, passing the result to
 
 .. _Dionysus:   http://mrzv.org/software/dionysus2
 
-When using CGAL version at least 4.11, DioDe includes
-``diode.fill_weighted_periodic_alpha_shapes(...)``, which generates the alpha
-shape for a weighted point set on a periodic cube::
+``diode.fill_weighted_periodic_alpha_shapes(...)`` generates the alpha shape
+for a weighted point set on a periodic cube::
 
     >>> weighted_points[:,3] /= 64
     >>> simplices_weighted_periodic = diode.fill_weighted_periodic_alpha_shapes(weighted_points)
@@ -149,9 +143,8 @@ which for full-dimensional input is the same simplex set as the alpha complex)
 and recompute their own filtration values -- for example a differentiable
 Cech-Delaunay filtration that recomputes values as minimum-enclosing-ball radii.
 For those,
-``diode.fill_delaunay_arrays(...)`` returns just the combinatorics, skipping all
-of CGAL's per-simplex Gabriel/circumradius work (about 1.6x faster than the alpha
-path in 2D and 4x in 3D)::
+``diode.fill_delaunay_arrays(...)`` returns just the combinatorics, avoiding
+per-simplex Gabriel and orthosphere calculations::
 
     >>> verts_by_dim = diode.fill_delaunay_arrays(points)
 
@@ -173,20 +166,47 @@ Consumers that need periodic geometry as well as combinatorics can use
 ``points[vertices[d]] + offsets[d] * (bbox_max - bbox_min)``. Vertex ids are
 sorted within each simplex and the integer offsets are normalized by a common
 lattice translation so that the first offset is zero. Points must be inside the
-half-open domain ``[bbox_min, bbox_max)``. The exporter converts CGAL's periodic
-triangulation to a one-sheet covering and raises rather than silently merging a
-repeated vertex-id tuple.
+half-open domain ``[bbox_min, bbox_max)``. The exporter validates that each
+vertex-id tuple has one coherent relative lattice lift.
 
 
 Exactness
 ~~~~~~~~~
 
-All functions take an argument ``exact``, set to ``False`` by default. The argument
-determines a choice of the kernel in CGAL
-(``Exact_predicates_inexact_constructions_kernel`` vs
-``Exact_predicates_exact_constructions_kernel``). ``exact = True`` guarantees
-correctness of the output; ``exact = False`` is faster, but can sometimes fail
-(not even produce a simplicial complex). It's possible to run the two versions
-adaptively by running the default ``exact = False`` version first, and if the
-result is not a simplicial complex, then run ``exact = True``. This should be the
-best of both worlds.
+All functions retain the ``exact`` argument for API compatibility. Geogram uses
+robust exact predicates for Delaunay and regular-triangulation decisions and
+double-precision constructions for circumcenters and alpha values. Consequently
+``exact=False`` and ``exact=True`` now select the same backend and produce the
+same numerical construction type.
+
+
+Geogram license
+~~~~~~~~~~~~~~~
+
+Geogram is distributed under the BSD 3-Clause License:
+
+Copyright (c) 2000-2022 Inria. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice,
+  this list of conditions and the following disclaimer.
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+* Neither the name of Inria nor the names of its contributors may be used to
+  endorse or promote products derived from this software without specific
+  prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
