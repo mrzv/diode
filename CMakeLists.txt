@@ -19,16 +19,51 @@ set(GEOGRAM_WITH_TRIANGLE OFF CACHE BOOL "" FORCE)
 set(GEOGRAM_WITH_LUA OFF CACHE BOOL "" FORCE)
 set(GEOGRAM_LIB_ONLY ON CACHE BOOL "" FORCE)
 if(NOT VORPALINE_PLATFORM)
+    string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" DIODE_SYSTEM_PROCESSOR)
     if(WIN32)
-        set(VORPALINE_PLATFORM Win-vs-generic)
-    elseif(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
-        set(VORPALINE_PLATFORM Darwin-aarch64-clang)
+        if(MSVC)
+            set(VORPALINE_PLATFORM Win-vs-generic)
+        elseif(MINGW AND DIODE_SYSTEM_PROCESSOR MATCHES "^(amd64|x86_64)$")
+            set(VORPALINE_PLATFORM Win64-gcc)
+        else()
+            message(FATAL_ERROR
+                "Unsupported Windows toolchain/architecture for Geogram: "
+                "${CMAKE_CXX_COMPILER_ID}/${CMAKE_SYSTEM_PROCESSOR}")
+        endif()
     elseif(APPLE)
-        set(VORPALINE_PLATFORM Darwin-clang)
-    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        set(VORPALINE_PLATFORM Linux64-clang)
+        if(NOT CMAKE_CXX_COMPILER_ID MATCHES "^(AppleClang|Clang)$")
+            message(FATAL_ERROR
+                "Geogram's bundled macOS platform requires Clang")
+        elseif(DIODE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+            set(VORPALINE_PLATFORM Darwin-aarch64-clang)
+        elseif(DIODE_SYSTEM_PROCESSOR MATCHES "^(amd64|x86_64)$")
+            set(VORPALINE_PLATFORM Darwin-clang)
+        else()
+            message(FATAL_ERROR
+                "Unsupported macOS architecture for Geogram: ${CMAKE_SYSTEM_PROCESSOR}")
+        endif()
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        if(DIODE_SYSTEM_PROCESSOR MATCHES "^(amd64|x86_64)$")
+            if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+                set(VORPALINE_PLATFORM Linux64-gcc)
+            elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+                set(VORPALINE_PLATFORM Linux64-clang)
+            else()
+                message(FATAL_ERROR
+                    "Unsupported Linux compiler for Geogram: ${CMAKE_CXX_COMPILER_ID}")
+            endif()
+        elseif(DIODE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$" AND
+               CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+            set(VORPALINE_PLATFORM Linux64-gcc-aarch64)
+        else()
+            message(FATAL_ERROR
+                "Unsupported Linux toolchain/architecture for Geogram: "
+                "${CMAKE_CXX_COMPILER_ID}/${CMAKE_SYSTEM_PROCESSOR}. "
+                "Set VORPALINE_PLATFORM explicitly if Geogram supports it.")
+        endif()
     else()
-        set(VORPALINE_PLATFORM Linux64-gcc)
+        message(FATAL_ERROR
+            "Unsupported platform for Geogram: ${CMAKE_SYSTEM_NAME}")
     endif()
 endif()
 FetchContent_Declare(
