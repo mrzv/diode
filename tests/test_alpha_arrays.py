@@ -44,37 +44,15 @@ def arrays_value_dict(res):
     return out
 
 
-def assert_maps_match(arrays, listed, *, exact, ambiguity=None):
-    """The arrays map must equal the list map: both run the identical fast direct
-    C++ path. The simplex set always matches exactly. Values match to round-off,
-    EXCEPT for periodic clouds, where a few near-degenerate simplices pick a
-    different periodic offset representative run-to-run (the documented periodic
-    Gabriel offset ambiguity); for those we bound the COUNT of differing values,
-    mirroring the fast-vs-slow tests. ambiguity is None / "2d" / "weighted_periodic".
-    """
+def assert_maps_match(arrays, listed, *, exact):
+    """The arrays and list forms run the same deterministic backend."""
     assert set(arrays) == set(listed), (
         f"simplex sets differ (arrays {len(arrays)}, list {len(listed)})")
     diffs = np.array([abs(arrays[k] - listed[k]) for k in arrays]) if arrays else np.array([0.0])
-    if ambiguity is None:
-        scale = max(1.0, max((abs(v) for v in listed.values()), default=1.0))
-        rtol = 1e-12 if exact else 1e-6
-        assert diffs.max() <= rtol * scale + 1e-9, (
-            f"arrays/list values differ by {diffs.max():.2e}")
-    elif ambiguity == "2d":
-        # 2D periodic: the offset representative differs by a possibly large,
-        # run-dependent amount on a few edges -- bound the count, not the magnitude.
-        assert np.median(diffs) < 1e-9, "most periodic values should match exactly"
-        n_big = int((diffs > 1e-7).sum())
-        assert n_big <= max(5, len(diffs) // 50), (
-            f"{n_big}/{len(diffs)} values differ -- more than offset ambiguity explains")
-    elif ambiguity == "weighted_periodic":
-        assert np.median(diffs) < 1e-9, "most periodic values should match exactly"
-        n_big = int((diffs > 1e-7).sum())
-        assert n_big <= max(3, len(diffs) // 100), (
-            f"{n_big}/{len(diffs)} values differ -- more than offset ambiguity explains")
-        assert diffs.max() < 1e-2
-    else:
-        raise ValueError(ambiguity)
+    scale = max(1.0, max((abs(v) for v in listed.values()), default=1.0))
+    rtol = 1e-12 if exact else 1e-6
+    assert diffs.max() <= rtol * scale + 1e-9, (
+        f"arrays/list values differ by {diffs.max():.2e}")
 
 
 # ---- weighted (4-column x,y,z,weight), non-periodic -------------------------
@@ -119,7 +97,7 @@ def test_periodic_alpha_arrays_match_list(dim, exact):
             continue
         arrays = arrays_value_dict(diode.fill_periodic_alpha_shapes_arrays(pts, exact, frm, to))
         # List and arrays forms traverse the same offset-aware backend.
-        assert_maps_match(arrays, listed, exact=exact, ambiguity=("2d" if dim == 2 else None))
+        assert_maps_match(arrays, listed, exact=exact)
 
 
 # ---- weighted periodic (4-column, 3D) --------------------------------------
@@ -137,7 +115,7 @@ def test_weighted_periodic_alpha_arrays_match_list(n, exact):
             diode.fill_weighted_periodic_alpha_shapes_arrays(data, exact, frm, to)
         pytest.skip("point cloud not representable in 1 sheet")
     arrays = arrays_value_dict(diode.fill_weighted_periodic_alpha_shapes_arrays(data, exact, frm, to))
-    assert_maps_match(arrays, listed, exact=exact, ambiguity="weighted_periodic")
+    assert_maps_match(arrays, listed, exact=exact)
 
 
 # ---- shared: dtype dispatch, domain validation, presence -------------------

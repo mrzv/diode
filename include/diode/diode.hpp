@@ -10,6 +10,7 @@
 #include <mutex>
 #include <set>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace diode {
@@ -19,6 +20,11 @@ inline void initialize_geogram() {
     static std::once_flag once;
     std::call_once(once, [] { GEO::initialize(); });
 }
+inline std::mutex& geogram_triangulation_mutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
 
 template<std::size_t D> using Point = std::array<double, D>;
 
@@ -60,7 +66,8 @@ LiftKey<N,D> canonicalize(std::array<Vertex<D>,N>& simplex) {
 
 template<std::size_t N, std::size_t D>
 Record<N,D>& add_record(std::map<LiftKey<N,D>,Record<N,D>>& records,
-                        std::array<Vertex<D>,N> simplex) {
+                        std::array<Vertex<D>,N> simplex,
+                        Point<D>* frame_shift=nullptr) {
     auto key = canonicalize(simplex);
     auto [it, inserted] = records.emplace(key, Record<N,D>{});
     if(inserted) {
@@ -70,16 +77,38 @@ Record<N,D>& add_record(std::map<LiftKey<N,D>,Record<N,D>>& records,
             it->second.weights[i] = simplex[i].weight;
         }
     }
+    if(frame_shift)
+        for(std::size_t d=0; d<D; ++d)
+            (*frame_shift)[d]=it->second.points[0][d]-simplex[0].point[d];
     return it->second;
+}
+
+template<std::size_t N, std::size_t D>
+Record<N,D>& add_record_with_witness(
+    std::map<LiftKey<N,D>,Record<N,D>>& records,
+    std::array<Vertex<D>,N> simplex,
+    const Vertex<D>& witness
+) {
+    Point<D> shift{};
+    auto& record=add_record(records,std::move(simplex),&shift);
+    Point<D> point=witness.point;
+    for(std::size_t d=0; d<D; ++d) point[d]+=shift[d];
+    record.witnesses.emplace_back(point,witness.weight);
+    return record;
 }
 
 template<std::size_t M>
 bool solve(std::array<std::array<double,M>,M> a, std::array<double,M> b,
            std::array<double,M>& x) {
+    double matrix_scale=0.0;
+    for(const auto& row:a) for(double value:row)
+        matrix_scale=std::max(matrix_scale,std::abs(value));
+    if(matrix_scale==0.0) return false;
     for(std::size_t k=0; k<M; ++k) {
         std::size_t pivot=k;
         for(std::size_t i=k+1; i<M; ++i) if(std::abs(a[i][k]) > std::abs(a[pivot][k])) pivot=i;
-        if(std::abs(a[pivot][k]) <= 64.0 * std::numeric_limits<double>::epsilon()) return false;
+        if(std::abs(a[pivot][k]) <=
+           64.0*std::numeric_limits<double>::epsilon()*matrix_scale) return false;
         std::swap(a[k],a[pivot]); std::swap(b[k],b[pivot]);
         for(std::size_t i=k+1; i<M; ++i) {
             const double q=a[i][k]/a[k][k];
@@ -125,11 +154,12 @@ void own_alpha(Record<N,D>& r) {
     Point<D> center{};
     const double radius=sphere(r.points,r.weights,&center);
     bool gabriel=std::isfinite(radius);
-    const double tol=128.0*std::numeric_limits<double>::epsilon()*std::max(1.0,std::abs(radius));
     for(const auto& witness:r.witnesses) {
         double power=-witness.second;
         for(std::size_t d=0; d<D; ++d) { double q=center[d]-witness.first[d]; power+=q*q; }
-        if(power < radius-tol) { gabriel=false; break; }
+        const double tolerance=128.0*std::numeric_limits<double>::epsilon()*
+            std::max(std::abs(radius),std::abs(power));
+        if(power < radius-tolerance) { gabriel=false; break; }
     }
     if(gabriel) { r.alpha=radius; r.tau.assign(r.key.vertices.begin(),r.key.vertices.end()); }
 }
@@ -142,25 +172,34 @@ void take_coface(Record<N,D>& r, double alpha, const std::vector<unsigned>& tau)
 template<class Points, std::size_t D>
 std::vector<Vertex<D>> unique_points(const Points& points, bool weighted=false,
                                      const Point<D>* from=nullptr) {
-    std::map<Point<D>,unsigned> last;
+    struct Selected {
+        unsigned id;
+        double weight;
+    };
+    std::map<Point<D>,Selected> selected;
     for(unsigned i=0; i<points.size(); ++i) {
         Point<D> p{};
         for(std::size_t d=0; d<D; ++d) {
             p[d]=static_cast<double>(points(i,d));
             if(!std::isfinite(p[d])) throw std::runtime_error("points must be finite");
         }
-        last[p]=i;
+        const double weight=weighted ? static_cast<double>(points(i,D)) : 0.0;
+        if(!std::isfinite(weight)) throw std::runtime_error("weights must be finite");
+        auto it=selected.find(p);
+        if(it==selected.end())
+            selected.emplace(p,Selected{i,weight});
+        else if(!weighted || weight>=it->second.weight)
+            it->second={i,weight};
     }
     std::vector<Vertex<D>> result;
-    result.reserve(last.size());
-    for(const auto& item:last) {
-        Vertex<D> v; v.id=item.second; v.point=item.first;
-        if(from) for(std::size_t d=0; d<D; ++d) v.point[d]-=(*from)[d];
-        if(weighted) {
-            v.weight=static_cast<double>(points(item.second,D));
-            if(!std::isfinite(v.weight)) throw std::runtime_error("weights must be finite");
-        }
-        result.push_back(v);
+    result.reserve(selected.size());
+    for(const auto& item:selected) {
+        Vertex<D> vertex;
+        vertex.id=item.second.id;
+        vertex.point=item.first;
+        vertex.weight=item.second.weight;
+        if(from) for(std::size_t d=0; d<D; ++d) vertex.point[d]-=(*from)[d];
+        result.push_back(vertex);
     }
     return result;
 }
@@ -183,18 +222,27 @@ template<> struct Complex<3> {
     std::vector<std::pair<LiftKey<3,3>,LiftKey<4,3>>> fc;
 };
 
+inline Record<2,2>& add_edge(Complex<2>& out, const std::array<Vertex<2>,2>& edge) {
+    auto& record=add_record(out.e,edge);
+    for(int i=0;i<2;++i) {
+        std::array<Vertex<2>,1> one{edge[i]};
+        auto& vertex=add_record_with_witness(out.v,one,edge[1-i]);
+        out.ve.emplace_back(vertex.key,record.key);
+    }
+    return record;
+}
+
 inline void add_triangle(Complex<2>& out, const std::array<Vertex<2>,3>& cell) {
     auto& face=add_record(out.f,cell);
     for(int skip=0; skip<3; ++skip) {
         std::array<Vertex<2>,2> edge{cell[(skip+1)%3],cell[(skip+2)%3]};
-        auto& er=add_record(out.e,edge);
-        er.witnesses.emplace_back(cell[skip].point,cell[skip].weight);
+        auto& er=add_edge(out,edge);
+        Point<2> shift{};
+        add_record(out.e,edge,&shift);
+        Point<2> witness=cell[skip].point;
+        for(std::size_t d=0;d<2;++d) witness[d]+=shift[d];
+        er.witnesses.emplace_back(witness,cell[skip].weight);
         out.ef.emplace_back(er.key,face.key);
-        for(int i=0;i<2;++i) {
-            std::array<Vertex<2>,1> one{edge[i]}; auto& vr=add_record(out.v,one);
-            vr.witnesses.emplace_back(edge[1-i].point,edge[1-i].weight);
-            out.ve.emplace_back(vr.key,er.key);
-        }
     }
 }
 
@@ -212,64 +260,134 @@ inline void add_triangle(Complex<3>& out, const std::array<Vertex<3>,3>& cell) {
     }
 }
 
-inline Complex<3> lower_dimensional_complex(std::vector<Vertex<3>> vertices) {
+inline Complex<3> lower_dimensional_complex(
+    std::vector<Vertex<3>> vertices, bool weighted
+) {
     Complex<3> out;
     if(vertices.empty()) return out;
-    for(const auto& vertex:vertices) add_record(out.v,std::array<Vertex<3>,1>{vertex});
     const auto origin=vertices.front().point;
     Point<3> axis{};
     double axis_norm=0.0;
     for(const auto& vertex:vertices) {
         Point<3> delta{};
-        double n=0.0;
-        for(int d=0;d<3;++d) { delta[d]=vertex.point[d]-origin[d]; n+=delta[d]*delta[d]; }
-        if(n>axis_norm) { axis_norm=n; axis=delta; }
+        double norm=0.0;
+        for(int d=0;d<3;++d) {
+            delta[d]=vertex.point[d]-origin[d];
+            norm+=delta[d]*delta[d];
+        }
+        if(norm>axis_norm) {
+            axis_norm=norm;
+            axis=delta;
+        }
     }
-    if(axis_norm==0.0) return out;
-    for(double& x:axis) x/=std::sqrt(axis_norm);
+    if(axis_norm==0.0) {
+        add_record(out.v,std::array<Vertex<3>,1>{vertices.front()});
+        return out;
+    }
+    for(double& value:axis) value/=std::sqrt(axis_norm);
+
     Point<3> second{};
     double second_norm=0.0;
     for(const auto& vertex:vertices) {
         Point<3> delta{};
         double projection=0.0;
-        for(int d=0;d<3;++d) { delta[d]=vertex.point[d]-origin[d]; projection+=delta[d]*axis[d]; }
-        double n=0.0;
-        for(int d=0;d<3;++d) { delta[d]-=projection*axis[d]; n+=delta[d]*delta[d]; }
-        if(n>second_norm) { second_norm=n; second=delta; }
+        for(int d=0;d<3;++d) {
+            delta[d]=vertex.point[d]-origin[d];
+            projection+=delta[d]*axis[d];
+        }
+        double norm=0.0;
+        for(int d=0;d<3;++d) {
+            delta[d]-=projection*axis[d];
+            norm+=delta[d]*delta[d];
+        }
+        if(norm>second_norm) {
+            second_norm=norm;
+            second=delta;
+        }
     }
-    const double tolerance=1024.0*std::numeric_limits<double>::epsilon()*std::max(1.0,axis_norm);
+    const double relative_tolerance=
+        1024.0*std::numeric_limits<double>::epsilon();
+    const double tolerance=relative_tolerance*relative_tolerance*axis_norm;
     if(second_norm<=tolerance) {
-        std::sort(vertices.begin(),vertices.end(),[&](const auto& a,const auto& b) {
-            double pa=0.0,pb=0.0;
-            for(int d=0;d<3;++d) { pa+=(a.point[d]-origin[d])*axis[d]; pb+=(b.point[d]-origin[d])*axis[d]; }
-            return pa<pb;
+        struct LineSite {
+            double coordinate;
+            Vertex<3> vertex;
+        };
+        std::vector<LineSite> sites;
+        sites.reserve(vertices.size());
+        for(const auto& vertex:vertices) {
+            double coordinate=0.0;
+            for(int d=0;d<3;++d)
+                coordinate+=(vertex.point[d]-origin[d])*axis[d];
+            sites.push_back({coordinate,vertex});
+        }
+        std::sort(sites.begin(),sites.end(),[](const auto& lhs,const auto& rhs) {
+            return lhs.coordinate<rhs.coordinate;
         });
-        for(std::size_t i=1;i<vertices.size();++i) {
-            auto& er=add_record(out.e,std::array<Vertex<3>,2>{vertices[i-1],vertices[i]});
-            for(int j=0;j<2;++j) {
-                auto& vr=add_record(out.v,std::array<Vertex<3>,1>{vertices[i-1+j]});
-                out.ve.emplace_back(vr.key,er.key);
+        std::vector<LineSite> hull;
+        std::vector<double> starts;
+        for(const auto& site:sites) {
+            double start=-std::numeric_limits<double>::infinity();
+            while(!hull.empty()) {
+                const auto& previous=hull.back();
+                start=((site.coordinate*site.coordinate-site.vertex.weight)-
+                       (previous.coordinate*previous.coordinate-previous.vertex.weight))/
+                      (2.0*(site.coordinate-previous.coordinate));
+                if(hull.size()==1 || start>starts.back()) break;
+                hull.pop_back();
+                starts.pop_back();
+            }
+            hull.push_back(site);
+            starts.push_back(start);
+        }
+        for(const auto& site:hull)
+            add_record(out.v,std::array<Vertex<3>,1>{site.vertex});
+        for(std::size_t i=1;i<hull.size();++i) {
+            auto& edge=add_record(
+                out.e,std::array<Vertex<3>,2>{hull[i-1].vertex,hull[i].vertex}
+            );
+            for(int endpoint=0;endpoint<2;++endpoint) {
+                const auto& vertex=endpoint==0 ? hull[i-1].vertex : hull[i].vertex;
+                auto& record=add_record(out.v,std::array<Vertex<3>,1>{vertex});
+                out.ve.emplace_back(record.key,edge.key);
             }
         }
         return out;
     }
-    for(double& x:second) x/=std::sqrt(second_norm);
+
+    for(double& value:second) value/=std::sqrt(second_norm);
     std::vector<double> coordinates;
-    coordinates.reserve(vertices.size()*2);
-    for(const auto& vertex:vertices) {
-        double x=0.0,y=0.0;
-        for(int d=0;d<3;++d) {
-            const double q=vertex.point[d]-origin[d];
-            x+=q*axis[d]; y+=q*second[d];
-        }
-        coordinates.push_back(x); coordinates.push_back(y);
+    coordinates.reserve(vertices.size()*(weighted ? 3 : 2));
+    double max_weight=0.0;
+    if(weighted) {
+        max_weight=vertices.front().weight;
+        for(const auto& vertex:vertices)
+            max_weight=std::max(max_weight,vertex.weight);
     }
-    GEO::SmartPointer<GEO::Delaunay2d> dt=new GEO::Delaunay2d();
-    dt->set_reorder(false);
-    dt->set_vertices(vertices.size(),coordinates.data());
-    for(GEO::index_t c=0;c<dt->nb_cells();++c) {
+    for(const auto& vertex:vertices) {
+        double x=0.0;
+        double y=0.0;
+        for(int d=0;d<3;++d) {
+            const double delta=vertex.point[d]-origin[d];
+            x+=delta*axis[d];
+            y+=delta*second[d];
+        }
+        coordinates.push_back(x);
+        coordinates.push_back(y);
+        if(weighted)
+            coordinates.push_back(std::sqrt(std::max(0.0,max_weight-vertex.weight)));
+    }
+    std::lock_guard<std::mutex> lock(geogram_triangulation_mutex());
+    GEO::Numeric::random_reset();
+    GEO::SmartPointer<GEO::Delaunay> triangulation=weighted
+        ? static_cast<GEO::Delaunay*>(new GEO::RegularWeightedDelaunay2d())
+        : static_cast<GEO::Delaunay*>(new GEO::Delaunay2d());
+    triangulation->set_reorder(false);
+    triangulation->set_vertices(vertices.size(),coordinates.data());
+    for(GEO::index_t cell_index=0;cell_index<triangulation->nb_cells();++cell_index) {
         std::array<Vertex<3>,3> cell;
-        for(int i=0;i<3;++i) cell[i]=vertices[dt->cell_vertex(c,i)];
+        for(int i=0;i<3;++i)
+            cell[i]=vertices[triangulation->cell_vertex(cell_index,i)];
         add_triangle(out,cell);
     }
     return out;
@@ -305,7 +423,7 @@ inline bool spans_three_dimensions(const std::vector<Vertex<3>>& vertices) {
         for(int d=0;d<3;++d) value+=(vertex.point[d]-origin[d])*normal[d];
         height=std::max(height,std::abs(value));
     }
-    const double scale=std::max(1.0,std::sqrt(first_norm*normal_norm));
+    const double scale=std::sqrt(first_norm*normal_norm);
     return height>1024.0*std::numeric_limits<double>::epsilon()*scale;
 }
 
@@ -314,16 +432,15 @@ inline void add_tetrahedron(Complex<3>& out, const std::array<Vertex<3>,4>& cell
     for(int omit=0; omit<4; ++omit) {
         std::array<Vertex<3>,3> face{}; int k=0;
         for(int i=0;i<4;++i) if(i!=omit) face[k++]=cell[i];
-        auto& fr=add_record(out.f,face);
-        fr.witnesses.emplace_back(cell[omit].point,cell[omit].weight);
+        auto& fr=add_record_with_witness(out.f,face,cell[omit]);
         out.fc.emplace_back(fr.key,cr.key);
         for(int a=0;a<3;++a) for(int b=a+1;b<3;++b) {
-            std::array<Vertex<3>,2> edge{face[a],face[b]}; auto& er=add_record(out.e,edge);
-            er.witnesses.emplace_back(face[3-a-b].point,face[3-a-b].weight);
+            std::array<Vertex<3>,2> edge{face[a],face[b]};
+            auto& er=add_record_with_witness(out.e,edge,face[3-a-b]);
             out.ef.emplace_back(er.key,fr.key);
             for(int i=0;i<2;++i) {
-                std::array<Vertex<3>,1> one{edge[i]}; auto& vr=add_record(out.v,one);
-                vr.witnesses.emplace_back(edge[1-i].point,edge[1-i].weight);
+                std::array<Vertex<3>,1> one{edge[i]};
+                auto& vr=add_record_with_witness(out.v,one,edge[1-i]);
                 out.ve.emplace_back(vr.key,er.key);
             }
         }
@@ -347,6 +464,45 @@ inline void compute_alpha(Complex<3>& x) {
     for(const auto& r:x.ve) take_coface(x.v.at(r.first),x.e.at(r.second).alpha,x.e.at(r.second).tau);
 }
 
+inline Complex<2> lower_dimensional_complex(std::vector<Vertex<2>> vertices) {
+    Complex<2> out;
+    if(vertices.empty()) return out;
+    if(vertices.size()==1) {
+        add_record(out.v,std::array<Vertex<2>,1>{vertices.front()});
+        return out;
+    }
+    const auto origin=vertices.front().point;
+    Point<2> axis{};
+    double axis_norm=0.0;
+    for(const auto& vertex:vertices) {
+        Point<2> delta{};
+        double norm=0.0;
+        for(int d=0;d<2;++d) {
+            delta[d]=vertex.point[d]-origin[d];
+            norm+=delta[d]*delta[d];
+        }
+        if(norm>axis_norm) {
+            axis_norm=norm;
+            axis=delta;
+        }
+    }
+    for(double& value:axis) value/=std::sqrt(axis_norm);
+    std::sort(vertices.begin(),vertices.end(),[&](const auto& lhs,const auto& rhs) {
+        double left=0.0;
+        double right=0.0;
+        for(int d=0;d<2;++d) {
+            left+=(lhs.point[d]-origin[d])*axis[d];
+            right+=(rhs.point[d]-origin[d])*axis[d];
+        }
+        return left<right;
+    });
+    for(const auto& vertex:vertices)
+        add_record(out.v,std::array<Vertex<2>,1>{vertex});
+    for(std::size_t i=1;i<vertices.size();++i)
+        add_edge(out,std::array<Vertex<2>,2>{vertices[i-1],vertices[i]});
+    return out;
+}
+
 template<class Points>
 Complex<2> triangulate2(const Points& points, bool periodic=false,
                         Point<2> from={0,0}, Point<2> to={1,1}) {
@@ -360,9 +516,12 @@ Complex<2> triangulate2(const Points& points, bool periodic=false,
         }
     } else vertices=base;
     Complex<2> out;
-    if(base.size()<3) return out;
+    if(base.size()<3)
+        return periodic ? out : lower_dimensional_complex(std::move(base));
     std::vector<double> coords; coords.reserve(vertices.size()*2);
     for(const auto& v:vertices) { coords.push_back(v.point[0]); coords.push_back(v.point[1]); }
+    std::lock_guard<std::mutex> lock(geogram_triangulation_mutex());
+    GEO::Numeric::random_reset();
     GEO::SmartPointer<GEO::Delaunay2d> dt=new GEO::Delaunay2d();
     dt->set_reorder(false);
     dt->set_vertices(vertices.size(),coords.data());
@@ -373,19 +532,16 @@ Complex<2> triangulate2(const Points& points, bool periodic=false,
             std::array<Point<2>,3> p{cell[0].point,cell[1].point,cell[2].point};
             std::array<double,3> w{}; Point<2> center{}; sphere(p,w,&center);
             const double tolerance_x=1024.0*std::numeric_limits<double>::epsilon()*
-                std::max(1.0,to[0]-from[0]);
+                (to[0]-from[0]);
             const double tolerance_y=1024.0*std::numeric_limits<double>::epsilon()*
-                std::max(1.0,to[1]-from[1]);
+                (to[1]-from[1]);
             if(center[0]<-tolerance_x || center[0]>to[0]-from[0]+tolerance_x ||
                center[1]<-tolerance_y || center[1]>to[1]-from[1]+tolerance_y) continue;
         }
         add_triangle(out,cell);
     }
+    if(!periodic && out.f.empty()) return lower_dimensional_complex(std::move(base));
     return out;
-}
-inline std::mutex& triangulation3_mutex() {
-    static std::mutex mutex;
-    return mutex;
 }
 
 
@@ -393,7 +549,7 @@ inline Complex<3> triangulate3_regular(
     const std::vector<Vertex<3>>& vertices, bool weighted,
     const Point<3>* periodic_extent=nullptr
 ) {
-    std::lock_guard<std::mutex> lock(triangulation3_mutex());
+    std::lock_guard<std::mutex> lock(geogram_triangulation_mutex());
     GEO::Numeric::random_reset();
     Complex<3> out;
     std::vector<double> coordinates;
@@ -429,7 +585,7 @@ inline Complex<3> triangulate3_regular(
             bool central=true;
             for(int d=0;d<3;++d) {
                 const double tolerance=1024.0*std::numeric_limits<double>::epsilon()*
-                    std::max(1.0,(*periodic_extent)[d]);
+                    (*periodic_extent)[d];
                 central=central && center[d]>=-tolerance &&
                     center[d]<=(*periodic_extent)[d]+tolerance;
             }
@@ -463,7 +619,9 @@ Complex<3> triangulate3(const Points& points, bool weighted=false, bool periodic
     initialize_geogram();
     auto vertices=unique_points<Points,3>(points,weighted,periodic?&from:nullptr);
     if(!periodic && !spans_three_dimensions(vertices))
-        return preserve_lower_dimension ? lower_dimensional_complex(vertices) : Complex<3>{};
+        return preserve_lower_dimension
+            ? lower_dimensional_complex(std::move(vertices),weighted)
+            : Complex<3>{};
     if(vertices.size()<4) return Complex<3>{};
     if(!periodic) return triangulate3_regular(vertices,weighted);
     Point<3> period{to[0]-from[0],to[1]-from[1],to[2]-from[2]};

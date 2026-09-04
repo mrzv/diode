@@ -46,6 +46,74 @@ def test_square():
     canon = lambda g: sorted((tuple(sorted(v)), val) for v, val in g)
     assert canon(f) == canon(expected_f)
 
+@pytest.mark.parametrize(
+    "points,expected",
+    [
+        (np.array([[0., 0.]]), {(0,): 0.0}),
+        (
+            np.array([[0., 0.], [2., 0.]]),
+            {(0,): 0.0, (1,): 0.0, (0, 1): 1.0},
+        ),
+        (
+            np.array([[0., 0.], [1., 0.], [2., 0.]]),
+            {(0,): 0.0, (1,): 0.0, (2,): 0.0,
+             (0, 1): 0.25, (1, 2): 0.25},
+        ),
+    ],
+)
+def test_lower_dimensional_2d_alpha_values(points, expected):
+    actual = {
+        tuple(sorted(int(vertex) for vertex in simplex)): alpha
+        for simplex, alpha in diode.fill_alpha_shapes(points)
+    }
+    assert actual == expected
+
+
+def test_tiny_geometry_preserves_alpha_scaling():
+    scale = 1e-8
+    points = np.array([[0., 0., 0.], [1., 0., 0.],
+                       [0., 1., 0.], [0., 0., 1.]])
+    baseline = {
+        tuple(sorted(simplex)): alpha
+        for simplex, alpha in diode.fill_alpha_shapes(points)
+    }
+    scaled = {
+        tuple(sorted(simplex)): alpha
+        for simplex, alpha in diode.fill_alpha_shapes(points * scale)
+    }
+    assert set(scaled) == set(baseline)
+    for simplex, alpha in baseline.items():
+        assert scaled[simplex] == pytest.approx(alpha * scale**2, rel=2e-12, abs=0)
+
+
+def test_tiny_weighted_geometry_preserves_alpha_scaling():
+    scale = 1e-8
+    points = np.array([[0., 0., 0.], [1., 0., 0.],
+                       [0., 1., 0.], [0., 0., 1.]])
+    weights = np.array([0.05, 0.02, 0.03, 0.01])
+    baseline_data = np.column_stack([points, weights])
+    scaled_data = np.column_stack([points * scale, weights * scale**2])
+    baseline = {
+        tuple(sorted(simplex)): alpha
+        for simplex, alpha in diode.fill_weighted_alpha_shapes(baseline_data)
+    }
+    scaled = {
+        tuple(sorted(simplex)): alpha
+        for simplex, alpha in diode.fill_weighted_alpha_shapes(scaled_data)
+    }
+    assert set(scaled) == set(baseline)
+    for simplex, alpha in baseline.items():
+        assert scaled[simplex] == pytest.approx(alpha * scale**2, rel=2e-12, abs=1e-32)
+
+
+def test_tiny_tetrahedron_circumcenter_scales():
+    scale = 1e-8
+    points = scale * np.array([[0., 0., 0.], [1., 0., 0.],
+                               [0., 1., 0.], [0., 0., 1.]])
+    np.testing.assert_allclose(
+        diode.circumcenter(points), np.full(3, 0.5 * scale), rtol=2e-15, atol=0
+    )
+
 def is_sorted(lst, key = lambda x: x):
     return all(key(lst[i]) <= key(lst[i+1]) for i in range(len(lst) - 1))
 

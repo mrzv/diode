@@ -106,6 +106,85 @@ def test_delaunay_degenerate_3d_emits_lower_dim_complex():
     assert sum(1 for k in s if len(k) == 1) == 4     # all 4 vertices present
 
 
+def test_skinny_planar_cloud_remains_two_dimensional():
+    points = np.array([
+        [0., 0., 0.],
+        [1., 0., 0.],
+        [0.5, 1e-8, 0.],
+    ])
+    assert list_simplex_set(diode.fill_delaunay(points)) == {
+        frozenset({0}), frozenset({1}), frozenset({2}),
+        frozenset({0, 1}), frozenset({0, 2}), frozenset({1, 2}),
+        frozenset({0, 1, 2}),
+    }
+
+@pytest.mark.parametrize(
+    "points,expected",
+    [
+        (np.array([[0., 0.]]), {frozenset({0})}),
+        (
+            np.array([[0., 0.], [2., 0.]]),
+            {frozenset({0}), frozenset({1}), frozenset({0, 1})},
+        ),
+        (
+            np.array([[0., 0.], [1., 0.], [2., 0.]]),
+            {frozenset({0}), frozenset({1}), frozenset({2}),
+             frozenset({0, 1}), frozenset({1, 2})},
+        ),
+    ],
+)
+def test_delaunay_degenerate_2d_emits_expected_complex(points, expected):
+    assert list_simplex_set(diode.fill_delaunay(points)) == expected
+
+
+@pytest.mark.parametrize("heavy_last", [False, True])
+def test_weighted_duplicate_coordinates_keep_maximum_weight(heavy_last):
+    low = [0., 0., 0., 0.01]
+    high = [0., 0., 0., 0.5]
+    data = np.array([
+        high if not heavy_last else low,
+        [1., 0., 0., 0.],
+        [0., 1., 0., 0.],
+        [0., 0., 1., 0.],
+        high if heavy_last else low,
+    ])
+    simplices = list_simplex_set(diode.fill_weighted_delaunay(data))
+    retained = 4 if heavy_last else 0
+    discarded = 0 if heavy_last else 4
+    assert frozenset({retained}) in simplices
+    assert all(discarded not in simplex for simplex in simplices)
+    values = {
+        tuple(sorted(int(vertex) for vertex in simplex)): alpha
+        for simplex, alpha in diode.fill_weighted_alpha_shapes(data)
+    }
+    assert values[(retained,)] == -0.5
+    assert all(discarded not in simplex for simplex in values)
+
+
+def test_weighted_collinear_delaunay_hides_redundant_site():
+    data = np.array([
+        [0., 0., 0., 0.],
+        [1., 0., 0., -100.],
+        [2., 0., 0., 0.],
+    ])
+    assert list_simplex_set(diode.fill_weighted_delaunay(data)) == {
+        frozenset({0}), frozenset({2}), frozenset({0, 2})
+    }
+
+
+def test_weighted_coplanar_delaunay_hides_redundant_site():
+    data = np.array([
+        [0., 0., 0., 0.],
+        [1., 0., 0., 0.],
+        [0., 1., 0., 0.],
+        [1., 1., 0., 0.],
+        [0.5, 0.5, 0., -100.],
+    ])
+    simplices = list_simplex_set(diode.fill_weighted_delaunay(data))
+    assert {next(iter(simplex)) for simplex in simplices if len(simplex) == 1} == {0, 1, 2, 3}
+    assert all(4 not in simplex for simplex in simplices)
+
+
 # ---- periodic: combinatorics vs the periodic alpha path ---------------------
 # The periodic triangulation must be representable in 1 sheet; the alpha path
 # raises "Cannot convert to 1-sheeted covering" otherwise (too few points for the

@@ -988,14 +988,10 @@ PYBIND11_MODULE(diode, m)
           "alpha-filtration pipelines where alpha values must be expressed as\n"
           "smooth functions of point coordinates.\n"
           "\n"
-          "Degenerate input and exact: with exact=False (default) the kernel uses\n"
-          "exact predicates but INEXACT constructions, so on degenerate, full-\n"
-          "dimensional clouds (e.g. many points on a common sphere/circle, as in\n"
-          "regular grids on a sphere or torus) the alpha values -- and even the\n"
-          "simplex set, where the Delaunay triangulation is genuinely non-unique --\n"
-          "are not reliable and can differ from fill_alpha_shapes_slow (or any other\n"
-          "implementation). This is inherent to inexact constructions, not specific\n"
-          "to this path. Use exact=True for guaranteed correct results on such input.");
+          "The exact argument is retained for API compatibility. Geogram uses\n"
+          "robust exact predicates for Delaunay decisions and double-precision\n"
+          "constructions for circumcenters and alpha values. exact=False and\n"
+          "exact=True currently select the same backend.");
     m.def("fill_alpha_shapes_slow",  &fill_alpha_shape_slow,
           "data"_a, "exact"_a = false, "with_attachment"_a = false,
           "Compatibility alias of fill_alpha_shapes.");
@@ -1013,9 +1009,9 @@ PYBIND11_MODULE(diode, m)
           "verts_by_dim where verts_by_dim[d] is an (n_d, d+1) int64 array of vertex\n"
           "ids. Skips all Gabriel/circumradius work, so it is faster than\n"
           "fill_alpha_shapes_arrays. Intended for consumers that recompute filtration\n"
-          "values themselves (e.g. a differentiable Cech-Delaunay filtration). For\n"
-          "degenerate (collinear/coplanar) input this returns the lower-dimensional\n"
-          "Delaunay complex (fill_alpha_shapes returns nothing there). Unsorted within\n"
+          "values themselves (e.g. a differentiable Cech-Delaunay filtration). On\n"
+          "lower-dimensional input this returns the corresponding Delaunay complex.\n"
+          "The 3D alpha exporters require full-dimensional cells. Unsorted within\n"
           "each dimension.");
     m.def("fill_delaunay", &fill_delaunay,
           "data"_a, "exact"_a = false,

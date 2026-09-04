@@ -3,9 +3,8 @@
 The existing branch tests already compare the fast paths to the `_slow`
 reference on uniform random clouds.  This file keeps the same oracle but covers
 normal clouds, mixtures, and samples from simple shapes, with and without small
-coordinate noise.  Noiseless lower-dimensional shape samples are intentionally
-only checked with exact=True: exact=False may expose ordinary inexact-kernel
-degeneracy rather than a diode wrapper regression.
+coordinate noise. Geogram uses robust exact predicates with double-precision
+constructions for both values of the API-compatible ``exact`` argument.
 """
 from itertools import combinations
 

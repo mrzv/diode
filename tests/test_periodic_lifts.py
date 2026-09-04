@@ -76,6 +76,18 @@ def test_periodic_boundary_edge_uses_short_lift(exact):
     lifted = points[vertices[1][row_index[0]]] + offsets[1][row_index[0]]
     np.testing.assert_allclose(lifted[1] - lifted[0], [-0.02, 0.0], atol=1e-12)
 
+@pytest.mark.parametrize("dim", [2, 3])
+@pytest.mark.parametrize("exact", [False, True])
+def test_periodic_boundary_edge_has_short_lift_alpha(dim, exact):
+    points = periodic_cloud(dim)
+    values = {
+        tuple(sorted(int(vertex) for vertex in simplex)): alpha
+        for simplex, alpha in diode.fill_periodic_alpha_shapes(
+            points, exact, [0] * dim, [1] * dim
+        )
+    }
+    assert values[(0, 1)] == pytest.approx(0.0001, rel=1e-10, abs=1e-15)
+
 
 @pytest.mark.parametrize(
     "points,bbox_min,bbox_max,match",
