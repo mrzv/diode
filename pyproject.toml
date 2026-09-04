@@ -9,7 +9,7 @@ version = "1.2.2"
 authors = [ { name = "Dmitriy Morozov",  email = "dmitriy@mrzv.org" } ]
 description = "Alpha shape generator using Geogram"
 readme = "README.rst"
-license = "GPL-3.0-or-later"
+license = "BSD-3-Clause"
 
 classifiers = [
     "Development Status :: 5 - Production/Stable",

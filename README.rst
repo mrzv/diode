@@ -180,10 +180,16 @@ double-precision constructions for circumcenters and alpha values. Consequently
 same numerical construction type.
 
 
-Geogram license
-~~~~~~~~~~~~~~~
+License
+-------
 
-Geogram is distributed under the BSD 3-Clause License:
+DioDe is distributed under the BSD 3-Clause License. See ``LICENSE`` for the
+complete terms.
+
+Geogram
+~~~~~~~
+
+Geogram is also distributed under the BSD 3-Clause License:
 
 Copyright (c) 2000-2022 Inria. All rights reserved.
 
