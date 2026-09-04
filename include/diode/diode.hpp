@@ -8,8 +8,9 @@
 #include <limits>
 #include <map>
 #include <mutex>
-#include <set>
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -38,63 +39,115 @@ template<std::size_t D> struct Vertex {
 template<std::size_t N, std::size_t D> struct LiftKey {
     std::array<unsigned, N> vertices{};
     std::array<std::array<int, D>, N> offsets{};
-    bool operator<(const LiftKey& rhs) const {
-        return vertices < rhs.vertices || (!(rhs.vertices < vertices) && offsets < rhs.offsets);
+    bool operator==(const LiftKey& rhs) const {
+        return vertices==rhs.vertices && offsets==rhs.offsets;
     }
 };
 
+inline std::size_t mix_hash(std::size_t seed, std::size_t value) {
+    value^=value>>30;
+    value*=static_cast<std::size_t>(0xbf58476d1ce4e5b9ULL);
+    value^=value>>27;
+    value*=static_cast<std::size_t>(0x94d049bb133111ebULL);
+    value^=value>>31;
+    return seed^(value+static_cast<std::size_t>(0x9e3779b97f4a7c15ULL)+(seed<<6)+(seed>>2));
+}
+
+template<std::size_t N, std::size_t D> struct LiftKeyHash {
+    std::size_t operator()(const LiftKey<N,D>& key) const {
+        std::size_t hash=0;
+        for(unsigned vertex:key.vertices) hash=mix_hash(hash,vertex);
+        for(const auto& offset:key.offsets)
+            for(int value:offset)
+                hash=mix_hash(hash,static_cast<std::size_t>(static_cast<unsigned>(value)));
+        return hash;
+    }
+};
+
+template<std::size_t N> struct VertexKeyHash {
+    std::size_t operator()(const std::array<unsigned,N>& key) const {
+        std::size_t hash=0;
+        for(unsigned vertex:key) hash=mix_hash(hash,vertex);
+        return hash;
+    }
+};
+
+template<std::size_t N, std::size_t D>
+double sphere(const std::array<Point<D>,N>& p, const std::array<double,N>& w,
+              Point<D>* center_out);
+
 template<std::size_t N, std::size_t D> struct Record {
-    LiftKey<N,D> key;
     std::array<Point<D>,N> points{};
     std::array<double,N> weights{};
-    std::vector<std::pair<Point<D>,double>> witnesses;
-    double alpha = std::numeric_limits<double>::infinity();
-    std::vector<unsigned> tau;
+    Point<D> center{};
+    double own_radius=std::numeric_limits<double>::infinity();
+    double alpha=std::numeric_limits<double>::infinity();
+    std::array<unsigned,D+1> tau{};
+    unsigned char tau_size=0;
+    bool gabriel=false;
+};
+
+template<std::size_t N, std::size_t D>
+using RecordMap=std::unordered_map<LiftKey<N,D>,Record<N,D>,LiftKeyHash<N,D>>;
+
+template<std::size_t N, std::size_t D> struct RecordInsertion {
+    Record<N,D>* record;
+    Point<D> frame_shift{};
+    bool inserted;
 };
 
 template<std::size_t N, std::size_t D>
 LiftKey<N,D> canonicalize(std::array<Vertex<D>,N>& simplex) {
-    std::sort(simplex.begin(), simplex.end(), [](const auto& a, const auto& b) { return a.id < b.id; });
+    std::sort(simplex.begin(),simplex.end(),[](const auto& a,const auto& b) {
+        return a.id<b.id;
+    });
     LiftKey<N,D> key;
-    const auto base = simplex[0].offset;
-    for(std::size_t i=0; i<N; ++i) {
-        key.vertices[i] = simplex[i].id;
-        for(std::size_t d=0; d<D; ++d) key.offsets[i][d] = simplex[i].offset[d] - base[d];
+    const auto base=simplex[0].offset;
+    for(std::size_t i=0;i<N;++i) {
+        key.vertices[i]=simplex[i].id;
+        for(std::size_t d=0;d<D;++d)
+            key.offsets[i][d]=simplex[i].offset[d]-base[d];
     }
     return key;
 }
 
 template<std::size_t N, std::size_t D>
-Record<N,D>& add_record(std::map<LiftKey<N,D>,Record<N,D>>& records,
-                        std::array<Vertex<D>,N> simplex,
-                        Point<D>* frame_shift=nullptr) {
-    auto key = canonicalize(simplex);
-    auto [it, inserted] = records.emplace(key, Record<N,D>{});
+RecordInsertion<N,D> add_record(
+    RecordMap<N,D>& records, std::array<Vertex<D>,N> simplex, bool collect_alpha
+) {
+    auto key=canonicalize(simplex);
+    auto [it,inserted]=records.try_emplace(key);
+    auto& record=it->second;
     if(inserted) {
-        it->second.key = key;
-        for(std::size_t i=0; i<N; ++i) {
-            it->second.points[i] = simplex[i].point;
-            it->second.weights[i] = simplex[i].weight;
+        for(std::size_t i=0;i<N;++i) {
+            record.points[i]=simplex[i].point;
+            record.weights[i]=simplex[i].weight;
+            record.tau[i]=key.vertices[i];
+        }
+        if(collect_alpha) {
+            record.own_radius=sphere(record.points,record.weights,&record.center);
+            record.gabriel=std::isfinite(record.own_radius);
         }
     }
-    if(frame_shift)
-        for(std::size_t d=0; d<D; ++d)
-            (*frame_shift)[d]=it->second.points[0][d]-simplex[0].point[d];
-    return it->second;
+    RecordInsertion<N,D> result{&record,{},inserted};
+    for(std::size_t d=0;d<D;++d)
+        result.frame_shift[d]=record.points[0][d]-simplex[0].point[d];
+    return result;
 }
 
 template<std::size_t N, std::size_t D>
-Record<N,D>& add_record_with_witness(
-    std::map<LiftKey<N,D>,Record<N,D>>& records,
-    std::array<Vertex<D>,N> simplex,
-    const Vertex<D>& witness
-) {
-    Point<D> shift{};
-    auto& record=add_record(records,std::move(simplex),&shift);
-    Point<D> point=witness.point;
-    for(std::size_t d=0; d<D; ++d) point[d]+=shift[d];
-    record.witnesses.emplace_back(point,witness.weight);
-    return record;
+void add_witness(const RecordInsertion<N,D>& insertion,const Vertex<D>& witness) {
+    auto& record=*insertion.record;
+    if(!record.gabriel) return;
+    double power=-witness.weight;
+    for(std::size_t d=0;d<D;++d) {
+        const double coordinate=witness.point[d]+insertion.frame_shift[d];
+        const double delta=record.center[d]-coordinate;
+        power+=delta*delta;
+    }
+    const double tolerance=128.0*std::numeric_limits<double>::epsilon()*
+        std::max(std::abs(record.own_radius),std::abs(power));
+    if(power<record.own_radius-tolerance) record.gabriel=false;
 }
 
 template<std::size_t M>
@@ -125,8 +178,8 @@ bool solve(std::array<std::array<double,M>,M> a, std::array<double,M> b,
 }
 
 template<std::size_t N, std::size_t D>
-double sphere(const std::array<Point<D>,N>& p, const std::array<double,N>& w,
-              Point<D>* center_out=nullptr) {
+double sphere(const std::array<Point<D>,N>& p,const std::array<double,N>& w,
+              Point<D>* center_out) {
     Point<D> center=p[0];
     if constexpr(N > 1) {
         constexpr std::size_t M=N-1;
@@ -150,23 +203,20 @@ double sphere(const std::array<Point<D>,N>& p, const std::array<double,N>& w,
 }
 
 template<std::size_t N, std::size_t D>
-void own_alpha(Record<N,D>& r) {
-    Point<D> center{};
-    const double radius=sphere(r.points,r.weights,&center);
-    bool gabriel=std::isfinite(radius);
-    for(const auto& witness:r.witnesses) {
-        double power=-witness.second;
-        for(std::size_t d=0; d<D; ++d) { double q=center[d]-witness.first[d]; power+=q*q; }
-        const double tolerance=128.0*std::numeric_limits<double>::epsilon()*
-            std::max(std::abs(radius),std::abs(power));
-        if(power < radius-tolerance) { gabriel=false; break; }
+void own_alpha(Record<N,D>& record) {
+    if(record.gabriel) {
+        record.alpha=record.own_radius;
+        record.tau_size=static_cast<unsigned char>(N);
     }
-    if(gabriel) { r.alpha=radius; r.tau.assign(r.key.vertices.begin(),r.key.vertices.end()); }
 }
 
-template<std::size_t N, std::size_t D>
-void take_coface(Record<N,D>& r, double alpha, const std::vector<unsigned>& tau) {
-    if(alpha < r.alpha) { r.alpha=alpha; r.tau=tau; }
+template<std::size_t N, std::size_t M, std::size_t D>
+void take_coface(Record<N,D>& record,const Record<M,D>& coface) {
+    if(coface.alpha<record.alpha) {
+        record.alpha=coface.alpha;
+        record.tau=coface.tau;
+        record.tau_size=coface.tau_size;
+    }
 }
 
 template<class Points, std::size_t D>
@@ -206,64 +256,96 @@ std::vector<Vertex<D>> unique_points(const Points& points, bool weighted=false,
 
 template<std::size_t D> struct Complex;
 template<> struct Complex<2> {
-    std::map<LiftKey<1,2>,Record<1,2>> v;
-    std::map<LiftKey<2,2>,Record<2,2>> e;
-    std::map<LiftKey<3,2>,Record<3,2>> f;
-    std::vector<std::pair<LiftKey<1,2>,LiftKey<2,2>>> ve;
-    std::vector<std::pair<LiftKey<2,2>,LiftKey<3,2>>> ef;
+    explicit Complex(bool collect=true): collect_alpha(collect) {
+        v.max_load_factor(0.8f); e.max_load_factor(0.8f); f.max_load_factor(0.8f);
+    }
+    Complex(const Complex&)=delete;
+    Complex& operator=(const Complex&)=delete;
+    Complex(Complex&&)=default;
+    Complex& operator=(Complex&&)=default;
+    void reserve(std::size_t vertices,std::size_t cells) {
+        v.reserve(vertices); e.reserve(2*cells); f.reserve(cells);
+        ve.reserve(4*cells); ef.reserve(3*cells);
+    }
+    bool collect_alpha;
+    RecordMap<1,2> v;
+    RecordMap<2,2> e;
+    RecordMap<3,2> f;
+    std::vector<std::pair<Record<1,2>*,Record<2,2>*>> ve;
+    std::vector<std::pair<Record<2,2>*,Record<3,2>*>> ef;
 };
 template<> struct Complex<3> {
-    std::map<LiftKey<1,3>,Record<1,3>> v;
-    std::map<LiftKey<2,3>,Record<2,3>> e;
-    std::map<LiftKey<3,3>,Record<3,3>> f;
-    std::map<LiftKey<4,3>,Record<4,3>> c;
-    std::vector<std::pair<LiftKey<1,3>,LiftKey<2,3>>> ve;
-    std::vector<std::pair<LiftKey<2,3>,LiftKey<3,3>>> ef;
-    std::vector<std::pair<LiftKey<3,3>,LiftKey<4,3>>> fc;
+    explicit Complex(bool collect=true): collect_alpha(collect) {
+        v.max_load_factor(0.8f); e.max_load_factor(0.8f);
+        f.max_load_factor(0.8f); c.max_load_factor(0.8f);
+    }
+    Complex(const Complex&)=delete;
+    Complex& operator=(const Complex&)=delete;
+    Complex(Complex&&)=default;
+    Complex& operator=(Complex&&)=default;
+    void reserve(std::size_t vertices,std::size_t cells) {
+        v.reserve(vertices); e.reserve(2*cells); f.reserve(2*cells); c.reserve(cells);
+        ve.reserve(4*cells); ef.reserve(6*cells); fc.reserve(4*cells);
+    }
+    bool collect_alpha;
+    RecordMap<1,3> v;
+    RecordMap<2,3> e;
+    RecordMap<3,3> f;
+    RecordMap<4,3> c;
+    std::vector<std::pair<Record<1,3>*,Record<2,3>*>> ve;
+    std::vector<std::pair<Record<2,3>*,Record<3,3>*>> ef;
+    std::vector<std::pair<Record<3,3>*,Record<4,3>*>> fc;
 };
 
-inline Record<2,2>& add_edge(Complex<2>& out, const std::array<Vertex<2>,2>& edge) {
-    auto& record=add_record(out.e,edge);
+inline RecordInsertion<2,2> add_edge(
+    Complex<2>& out,const std::array<Vertex<2>,2>& edge
+) {
+    auto result=add_record(out.e,edge,out.collect_alpha);
+    if(!result.inserted) return result;
     for(int i=0;i<2;++i) {
-        std::array<Vertex<2>,1> one{edge[i]};
-        auto& vertex=add_record_with_witness(out.v,one,edge[1-i]);
-        out.ve.emplace_back(vertex.key,record.key);
+        auto vertex=add_record(
+            out.v,std::array<Vertex<2>,1>{edge[i]},out.collect_alpha
+        );
+        add_witness(vertex,edge[1-i]);
+        out.ve.emplace_back(vertex.record,result.record);
     }
-    return record;
+    return result;
 }
 
-inline void add_triangle(Complex<2>& out, const std::array<Vertex<2>,3>& cell) {
-    auto& face=add_record(out.f,cell);
-    for(int skip=0; skip<3; ++skip) {
+inline void add_triangle(Complex<2>& out,const std::array<Vertex<2>,3>& cell) {
+    auto face=add_record(out.f,cell,out.collect_alpha);
+    if(!face.inserted) return;
+    for(int skip=0;skip<3;++skip) {
         std::array<Vertex<2>,2> edge{cell[(skip+1)%3],cell[(skip+2)%3]};
-        auto& er=add_edge(out,edge);
-        Point<2> shift{};
-        add_record(out.e,edge,&shift);
-        Point<2> witness=cell[skip].point;
-        for(std::size_t d=0;d<2;++d) witness[d]+=shift[d];
-        er.witnesses.emplace_back(witness,cell[skip].weight);
-        out.ef.emplace_back(er.key,face.key);
+        auto edge_record=add_edge(out,edge);
+        add_witness(edge_record,cell[skip]);
+        out.ef.emplace_back(edge_record.record,face.record);
     }
 }
 
-inline void add_triangle(Complex<3>& out, const std::array<Vertex<3>,3>& cell) {
-    auto& face=add_record(out.f,cell);
-    for(int skip=0; skip<3; ++skip) {
+inline void add_triangle(Complex<3>& out,const std::array<Vertex<3>,3>& cell) {
+    auto face=add_record(out.f,cell,out.collect_alpha);
+    if(!face.inserted) return;
+    for(int skip=0;skip<3;++skip) {
         std::array<Vertex<3>,2> edge{cell[(skip+1)%3],cell[(skip+2)%3]};
-        auto& er=add_record(out.e,edge);
-        out.ef.emplace_back(er.key,face.key);
+        auto edge_record=add_record(out.e,edge,out.collect_alpha);
+        add_witness(edge_record,cell[skip]);
+        out.ef.emplace_back(edge_record.record,face.record);
+        if(!edge_record.inserted) continue;
         for(int i=0;i<2;++i) {
-            std::array<Vertex<3>,1> one{edge[i]};
-            auto& vr=add_record(out.v,one);
-            out.ve.emplace_back(vr.key,er.key);
+            auto vertex=add_record(
+                out.v,std::array<Vertex<3>,1>{edge[i]},out.collect_alpha
+            );
+            add_witness(vertex,edge[1-i]);
+            out.ve.emplace_back(vertex.record,edge_record.record);
         }
     }
 }
 
 inline Complex<3> lower_dimensional_complex(
-    std::vector<Vertex<3>> vertices, bool weighted
+    std::vector<Vertex<3>> vertices,bool weighted,bool collect_alpha=true
 ) {
-    Complex<3> out;
+    Complex<3> out(collect_alpha);
     if(vertices.empty()) return out;
     const auto origin=vertices.front().point;
     Point<3> axis{};
@@ -281,7 +363,9 @@ inline Complex<3> lower_dimensional_complex(
         }
     }
     if(axis_norm==0.0) {
-        add_record(out.v,std::array<Vertex<3>,1>{vertices.front()});
+        add_record(
+            out.v,std::array<Vertex<3>,1>{vertices.front()},out.collect_alpha
+        );
         return out;
     }
     for(double& value:axis) value/=std::sqrt(axis_norm);
@@ -340,16 +424,24 @@ inline Complex<3> lower_dimensional_complex(
             hull.push_back(site);
             starts.push_back(start);
         }
+        out.reserve(hull.size(),hull.size());
         for(const auto& site:hull)
-            add_record(out.v,std::array<Vertex<3>,1>{site.vertex});
+            add_record(
+                out.v,std::array<Vertex<3>,1>{site.vertex},out.collect_alpha
+            );
         for(std::size_t i=1;i<hull.size();++i) {
-            auto& edge=add_record(
-                out.e,std::array<Vertex<3>,2>{hull[i-1].vertex,hull[i].vertex}
+            auto edge=add_record(
+                out.e,std::array<Vertex<3>,2>{hull[i-1].vertex,hull[i].vertex},
+                out.collect_alpha
             );
             for(int endpoint=0;endpoint<2;++endpoint) {
                 const auto& vertex=endpoint==0 ? hull[i-1].vertex : hull[i].vertex;
-                auto& record=add_record(out.v,std::array<Vertex<3>,1>{vertex});
-                out.ve.emplace_back(record.key,edge.key);
+                const auto& witness=endpoint==0 ? hull[i].vertex : hull[i-1].vertex;
+                auto record=add_record(
+                    out.v,std::array<Vertex<3>,1>{vertex},out.collect_alpha
+                );
+                add_witness(record,witness);
+                out.ve.emplace_back(record.record,edge.record);
             }
         }
         return out;
@@ -384,6 +476,7 @@ inline Complex<3> lower_dimensional_complex(
         : static_cast<GEO::Delaunay*>(new GEO::Delaunay2d());
     triangulation->set_reorder(true);
     triangulation->set_vertices(vertices.size(),coordinates.data());
+    out.reserve(vertices.size(),triangulation->nb_cells());
     for(GEO::index_t cell_index=0;cell_index<triangulation->nb_cells();++cell_index) {
         std::array<Vertex<3>,3> cell;
         for(int i=0;i<3;++i)
@@ -427,48 +520,67 @@ inline bool spans_three_dimensions(const std::vector<Vertex<3>>& vertices) {
     return height>1024.0*std::numeric_limits<double>::epsilon()*scale;
 }
 
-inline void add_tetrahedron(Complex<3>& out, const std::array<Vertex<3>,4>& cell) {
-    auto& cr=add_record(out.c,cell);
-    for(int omit=0; omit<4; ++omit) {
-        std::array<Vertex<3>,3> face{}; int k=0;
+inline void add_tetrahedron(Complex<3>& out,const std::array<Vertex<3>,4>& cell) {
+    auto tetrahedron=add_record(out.c,cell,out.collect_alpha);
+    if(!tetrahedron.inserted) return;
+    for(int omit=0;omit<4;++omit) {
+        std::array<Vertex<3>,3> face{};
+        int k=0;
         for(int i=0;i<4;++i) if(i!=omit) face[k++]=cell[i];
-        auto& fr=add_record_with_witness(out.f,face,cell[omit]);
-        out.fc.emplace_back(fr.key,cr.key);
-        for(int a=0;a<3;++a) for(int b=a+1;b<3;++b) {
-            std::array<Vertex<3>,2> edge{face[a],face[b]};
-            auto& er=add_record_with_witness(out.e,edge,face[3-a-b]);
-            out.ef.emplace_back(er.key,fr.key);
+        auto face_record=add_record(out.f,face,out.collect_alpha);
+        add_witness(face_record,cell[omit]);
+        out.fc.emplace_back(face_record.record,tetrahedron.record);
+        if(!face_record.inserted) continue;
+        for(int skip=0;skip<3;++skip) {
+            std::array<Vertex<3>,2> edge{
+                face[(skip+1)%3],face[(skip+2)%3]
+            };
+            auto edge_record=add_record(out.e,edge,out.collect_alpha);
+            add_witness(edge_record,face[skip]);
+            out.ef.emplace_back(edge_record.record,face_record.record);
+            if(!edge_record.inserted) continue;
             for(int i=0;i<2;++i) {
-                std::array<Vertex<3>,1> one{edge[i]};
-                auto& vr=add_record_with_witness(out.v,one,edge[1-i]);
-                out.ve.emplace_back(vr.key,er.key);
+                auto vertex=add_record(
+                    out.v,std::array<Vertex<3>,1>{edge[i]},out.collect_alpha
+                );
+                add_witness(vertex,edge[1-i]);
+                out.ve.emplace_back(vertex.record,edge_record.record);
             }
         }
     }
 }
 
-inline void compute_alpha(Complex<2>& x) {
-    for(auto& p:x.f) own_alpha(p.second);
-    for(auto& p:x.e) own_alpha(p.second);
-    for(const auto& r:x.ef) take_coface(x.e.at(r.first),x.f.at(r.second).alpha,x.f.at(r.second).tau);
-    for(auto& p:x.v) own_alpha(p.second);
-    for(const auto& r:x.ve) take_coface(x.v.at(r.first),x.e.at(r.second).alpha,x.e.at(r.second).tau);
+inline void compute_alpha(Complex<2>& complex) {
+    for(auto& item:complex.f) own_alpha(item.second);
+    for(auto& item:complex.e) own_alpha(item.second);
+    for(const auto& relation:complex.ef)
+        take_coface(*relation.first,*relation.second);
+    for(auto& item:complex.v) own_alpha(item.second);
+    for(const auto& relation:complex.ve)
+        take_coface(*relation.first,*relation.second);
 }
-inline void compute_alpha(Complex<3>& x) {
-    for(auto& p:x.c) own_alpha(p.second);
-    for(auto& p:x.f) own_alpha(p.second);
-    for(const auto& r:x.fc) take_coface(x.f.at(r.first),x.c.at(r.second).alpha,x.c.at(r.second).tau);
-    for(auto& p:x.e) own_alpha(p.second);
-    for(const auto& r:x.ef) take_coface(x.e.at(r.first),x.f.at(r.second).alpha,x.f.at(r.second).tau);
-    for(auto& p:x.v) own_alpha(p.second);
-    for(const auto& r:x.ve) take_coface(x.v.at(r.first),x.e.at(r.second).alpha,x.e.at(r.second).tau);
+inline void compute_alpha(Complex<3>& complex) {
+    for(auto& item:complex.c) own_alpha(item.second);
+    for(auto& item:complex.f) own_alpha(item.second);
+    for(const auto& relation:complex.fc)
+        take_coface(*relation.first,*relation.second);
+    for(auto& item:complex.e) own_alpha(item.second);
+    for(const auto& relation:complex.ef)
+        take_coface(*relation.first,*relation.second);
+    for(auto& item:complex.v) own_alpha(item.second);
+    for(const auto& relation:complex.ve)
+        take_coface(*relation.first,*relation.second);
 }
 
-inline Complex<2> lower_dimensional_complex(std::vector<Vertex<2>> vertices) {
-    Complex<2> out;
+inline Complex<2> lower_dimensional_complex(
+    std::vector<Vertex<2>> vertices,bool collect_alpha=true
+) {
+    Complex<2> out(collect_alpha);
     if(vertices.empty()) return out;
     if(vertices.size()==1) {
-        add_record(out.v,std::array<Vertex<2>,1>{vertices.front()});
+        add_record(
+            out.v,std::array<Vertex<2>,1>{vertices.front()},out.collect_alpha
+        );
         return out;
     }
     const auto origin=vertices.front().point;
@@ -496,16 +608,21 @@ inline Complex<2> lower_dimensional_complex(std::vector<Vertex<2>> vertices) {
         }
         return left<right;
     });
+    out.reserve(vertices.size(),vertices.size());
     for(const auto& vertex:vertices)
-        add_record(out.v,std::array<Vertex<2>,1>{vertex});
+        add_record(
+            out.v,std::array<Vertex<2>,1>{vertex},out.collect_alpha
+        );
     for(std::size_t i=1;i<vertices.size();++i)
         add_edge(out,std::array<Vertex<2>,2>{vertices[i-1],vertices[i]});
     return out;
 }
 
 template<class Points>
-Complex<2> triangulate2(const Points& points, bool periodic=false,
-                        Point<2> from={0,0}, Point<2> to={1,1}) {
+Complex<2> triangulate2(
+    const Points& points,bool periodic=false,Point<2> from={0,0},
+    Point<2> to={1,1},bool collect_alpha=true
+) {
     initialize_geogram();
     auto base=unique_points<Points,2>(points,false,periodic?&from:nullptr);
     std::vector<Vertex<2>> vertices;
@@ -515,9 +632,11 @@ Complex<2> triangulate2(const Points& points, bool periodic=false,
             v.offset={ox,oy}; v.point[0]+=ox*(to[0]-from[0]); v.point[1]+=oy*(to[1]-from[1]); vertices.push_back(v);
         }
     } else vertices=base;
-    Complex<2> out;
+    Complex<2> out(collect_alpha);
     if(base.size()<3)
-        return periodic ? out : lower_dimensional_complex(std::move(base));
+        return periodic
+            ? std::move(out)
+            : lower_dimensional_complex(std::move(base),collect_alpha);
     std::vector<double> coords; coords.reserve(vertices.size()*2);
     for(const auto& v:vertices) { coords.push_back(v.point[0]); coords.push_back(v.point[1]); }
     std::lock_guard<std::mutex> lock(geogram_triangulation_mutex());
@@ -525,6 +644,10 @@ Complex<2> triangulate2(const Points& points, bool periodic=false,
     GEO::SmartPointer<GEO::Delaunay2d> dt=new GEO::Delaunay2d();
     dt->set_reorder(true);
     dt->set_vertices(vertices.size(),coords.data());
+    const std::size_t expected_cells=periodic
+        ? static_cast<std::size_t>(dt->nb_cells())/9+8
+        : static_cast<std::size_t>(dt->nb_cells());
+    out.reserve(base.size(),expected_cells);
     for(GEO::index_t c=0;c<dt->nb_cells();++c) {
         std::array<Vertex<2>,3> cell;
         for(int i=0;i<3;++i) cell[i]=vertices[dt->cell_vertex(c,i)];
@@ -540,18 +663,19 @@ Complex<2> triangulate2(const Points& points, bool periodic=false,
         }
         add_triangle(out,cell);
     }
-    if(!periodic && out.f.empty()) return lower_dimensional_complex(std::move(base));
+    if(!periodic && out.f.empty())
+        return lower_dimensional_complex(std::move(base),collect_alpha);
     return out;
 }
 
 
 inline Complex<3> triangulate3_regular(
-    const std::vector<Vertex<3>>& vertices, bool weighted,
-    const Point<3>* periodic_extent=nullptr
+    const std::vector<Vertex<3>>& vertices,bool weighted,
+    const Point<3>* periodic_extent=nullptr,bool collect_alpha=true
 ) {
     std::lock_guard<std::mutex> lock(geogram_triangulation_mutex());
     GEO::Numeric::random_reset();
-    Complex<3> out;
+    Complex<3> out(collect_alpha);
     std::vector<double> coordinates;
     coordinates.reserve(vertices.size()*(weighted ? 4 : 3));
     double max_weight=0.0;
@@ -568,6 +692,10 @@ inline Complex<3> triangulate3_regular(
         : static_cast<GEO::Delaunay*>(new GEO::Delaunay3d());
     dt->set_reorder(true);
     dt->set_vertices(vertices.size(),coordinates.data());
+    const std::size_t tile_count=periodic_extent ? 27 : 1;
+    const std::size_t expected_cells=
+        static_cast<std::size_t>(dt->nb_cells())/tile_count+8;
+    out.reserve(vertices.size()/tile_count,expected_cells);
     for(GEO::index_t c=0;c<dt->nb_cells();++c) {
         std::array<Vertex<3>,4> cell;
         bool repeated=false;
@@ -597,78 +725,117 @@ inline Complex<3> triangulate3_regular(
 }
 
 inline Complex<3> triangulate3_tiled(
-    const std::vector<Vertex<3>>& base, bool weighted, const Point<3>& period
+    const std::vector<Vertex<3>>& base,bool weighted,const Point<3>& period,
+    bool collect_alpha=true
 ) {
     std::vector<Vertex<3>> vertices;
     vertices.reserve(base.size()*27);
-    for(int ox=-1;ox<=1;++ox) for(int oy=-1;oy<=1;++oy) for(int oz=-1;oz<=1;++oz)
-        for(auto vertex:base) {
-            vertex.offset={ox,oy,oz};
-            vertex.point[0]+=ox*period[0];
-            vertex.point[1]+=oy*period[1];
-            vertex.point[2]+=oz*period[2];
-            vertices.push_back(vertex);
-        }
-    return triangulate3_regular(vertices,weighted,&period);
+    for(int ox=-1;ox<=1;++ox)
+        for(int oy=-1;oy<=1;++oy)
+            for(int oz=-1;oz<=1;++oz)
+                for(auto vertex:base) {
+                    vertex.offset={ox,oy,oz};
+                    vertex.point[0]+=ox*period[0];
+                    vertex.point[1]+=oy*period[1];
+                    vertex.point[2]+=oz*period[2];
+                    vertices.push_back(vertex);
+                }
+    return triangulate3_regular(vertices,weighted,&period,collect_alpha);
 }
 
 template<class Points>
-Complex<3> triangulate3(const Points& points, bool weighted=false, bool periodic=false,
-                        Point<3> from={0,0,0}, Point<3> to={1,1,1},
-                        bool preserve_lower_dimension=false) {
+Complex<3> triangulate3(
+    const Points& points,bool weighted=false,bool periodic=false,
+    Point<3> from={0,0,0},Point<3> to={1,1,1},
+    bool preserve_lower_dimension=false,bool collect_alpha=true
+) {
     initialize_geogram();
-    auto vertices=unique_points<Points,3>(points,weighted,periodic?&from:nullptr);
+    auto vertices=unique_points<Points,3>(
+        points,weighted,periodic ? &from : nullptr
+    );
     if(!periodic && !spans_three_dimensions(vertices))
         return preserve_lower_dimension
-            ? lower_dimensional_complex(std::move(vertices),weighted)
-            : Complex<3>{};
-    if(vertices.size()<4) return Complex<3>{};
-    if(!periodic) return triangulate3_regular(vertices,weighted);
+            ? lower_dimensional_complex(
+                std::move(vertices),weighted,collect_alpha
+            )
+            : Complex<3>(collect_alpha);
+    if(vertices.size()<4) return Complex<3>(collect_alpha);
+    if(!periodic)
+        return triangulate3_regular(
+            vertices,weighted,nullptr,collect_alpha
+        );
     Point<3> period{to[0]-from[0],to[1]-from[1],to[2]-from[2]};
-    return triangulate3_tiled(vertices,weighted,period);
+    return triangulate3_tiled(vertices,weighted,period,collect_alpha);
 }
 
-template<std::size_t N, std::size_t D, class Callback>
-void emit_values_plain(const std::map<LiftKey<N,D>,Record<N,D>>& records, const Callback& cb) {
-    std::map<std::array<unsigned,N>,const Record<N,D>*> unique;
-    for(const auto& item:records) {
-        auto [it,inserted]=unique.emplace(item.first.vertices,&item.second);
-        if(!inserted)
-            throw std::runtime_error("Cannot convert periodic triangulation to a one-sheeted covering");
-    }
-    for(const auto& item:unique) if(std::isfinite(item.second->alpha)) cb(item.first,item.second->alpha);
+template<std::size_t N,std::size_t D>
+bool has_nonzero_offsets(const RecordMap<N,D>& records) {
+    for(const auto& item:records)
+        for(const auto& offset:item.first.offsets)
+            for(int value:offset)
+                if(value!=0) return true;
+    return false;
 }
 
-template<std::size_t N, std::size_t D, class Callback>
-void emit_values_attachment(const std::map<LiftKey<N,D>,Record<N,D>>& records, const Callback& cb) {
-    std::map<std::array<unsigned,N>,const Record<N,D>*> unique;
-    for(const auto& item:records) {
-        auto [it,inserted]=unique.emplace(item.first.vertices,&item.second);
-        if(!inserted)
-            throw std::runtime_error("Cannot convert periodic triangulation to a one-sheeted covering");
-    }
-    for(const auto& item:unique) if(std::isfinite(item.second->alpha)) cb(item.first,item.second->alpha,item.second->tau);
-}
-
-template<std::size_t N, std::size_t D, class Callback>
-void emit_combinatorics(const std::map<LiftKey<N,D>,Record<N,D>>& records, const Callback& cb) {
-    std::set<std::array<unsigned,N>> seen;
-    for(const auto& item:records) {
+template<std::size_t N,std::size_t D>
+void validate_one_sheeted(const RecordMap<N,D>& records) {
+    if(!has_nonzero_offsets(records)) return;
+    std::unordered_set<std::array<unsigned,N>,VertexKeyHash<N>> seen;
+    seen.reserve(records.size());
+    for(const auto& item:records)
         if(!seen.insert(item.first.vertices).second)
-            throw std::runtime_error("Cannot convert periodic triangulation to a one-sheeted covering");
-        cb(item.first.vertices);
+            throw std::runtime_error(
+                "Cannot convert periodic triangulation to a one-sheeted covering"
+            );
+}
+
+template<std::size_t N,std::size_t D,class Callback>
+void emit_values_plain(const RecordMap<N,D>& records,const Callback& callback) {
+    validate_one_sheeted(records);
+    for(const auto& item:records)
+        if(std::isfinite(item.second.alpha))
+            callback(item.first.vertices,item.second.alpha);
+}
+
+template<std::size_t N,std::size_t D,class Callback>
+void emit_values_attachment(
+    const RecordMap<N,D>& records,const Callback& callback
+) {
+    validate_one_sheeted(records);
+    for(const auto& item:records) {
+        if(std::isfinite(item.second.alpha)) {
+            const auto& record=item.second;
+            std::vector<unsigned> tau(
+                record.tau.begin(),record.tau.begin()+record.tau_size
+            );
+            callback(item.first.vertices,record.alpha,tau);
+        }
     }
 }
 
-template<std::size_t N, std::size_t D, class Callback>
-void emit_lifts(const std::map<LiftKey<N,D>,Record<N,D>>& records, const Callback& cb) {
-    std::map<std::array<unsigned,N>,std::array<std::array<int,D>,N>> seen;
+template<std::size_t N,std::size_t D,class Callback>
+void emit_combinatorics(
+    const RecordMap<N,D>& records,const Callback& callback
+) {
+    validate_one_sheeted(records);
+    for(const auto& item:records) callback(item.first.vertices);
+}
+
+template<std::size_t N,std::size_t D,class Callback>
+void emit_lifts(const RecordMap<N,D>& records,const Callback& callback) {
+    using Offsets=std::array<std::array<int,D>,N>;
+    std::unordered_map<std::array<unsigned,N>,Offsets,VertexKeyHash<N>> seen;
+    seen.reserve(records.size());
     for(const auto& item:records) {
-        auto [it,inserted]=seen.emplace(item.first.vertices,item.first.offsets);
-        if(!inserted && it->second!=item.first.offsets)
-            throw std::runtime_error("Cannot convert periodic triangulation to a one-sheeted covering");
+        auto [iterator,inserted]=seen.emplace(
+            item.first.vertices,item.first.offsets
+        );
+        if(!inserted && iterator->second!=item.first.offsets)
+            throw std::runtime_error(
+                "Cannot convert periodic triangulation to a one-sheeted covering"
+            );
     }
-    for(const auto& item:seen) cb(item.first,item.second);
+    for(const auto& item:seen) callback(item.first,item.second);
 }
 
 template<class C, class CB> void emit_alpha(C& x,const CB& cb) {
@@ -719,19 +886,19 @@ void AlphaShapes<exact>::fill_periodic_alpha_shapes(const Points& p,const Simple
 template<bool exact> template<class Points,class SimplexCallback>
 void AlphaShapes<exact>::fill_periodic_alpha_shapes_direct(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { auto x=detail::triangulate3(p,false,true,a,b); detail::emit_alpha(x,cb); }
 template<bool exact> template<class Points,class SimplexCallback>
-void AlphaShapes<exact>::fill_delaunay(const Points& p,const SimplexCallback& cb) { auto x=detail::triangulate3(p,false,false,{0,0,0},{1,1,1},true); detail::emit_delaunay(x,cb); }
+void AlphaShapes<exact>::fill_delaunay(const Points& p,const SimplexCallback& cb) { auto x=detail::triangulate3(p,false,false,{0,0,0},{1,1,1},true,false); detail::emit_delaunay(x,cb); }
 template<bool exact> template<class Points,class SimplexCallback>
-void AlphaShapes<exact>::fill_weighted_delaunay(const Points& p,const SimplexCallback& cb) { auto x=detail::triangulate3(p,true,false,{0,0,0},{1,1,1},true); detail::emit_delaunay(x,cb); }
+void AlphaShapes<exact>::fill_weighted_delaunay(const Points& p,const SimplexCallback& cb) { auto x=detail::triangulate3(p,true,false,{0,0,0},{1,1,1},true,false); detail::emit_delaunay(x,cb); }
 template<bool exact> template<class Points,class SimplexCallback>
-void AlphaShapes<exact>::fill_periodic_delaunay(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { auto x=detail::triangulate3(p,false,true,a,b); detail::emit_delaunay(x,cb); }
+void AlphaShapes<exact>::fill_periodic_delaunay(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { auto x=detail::triangulate3(p,false,true,a,b,false,false); detail::emit_delaunay(x,cb); }
 template<bool exact> template<class Points,class SimplexCallback>
-void AlphaShapes<exact>::fill_periodic_delaunay_lifts(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { auto x=detail::triangulate3(p,false,true,a,b); detail::emit_periodic_lifts(x,cb); }
+void AlphaShapes<exact>::fill_periodic_delaunay_lifts(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { auto x=detail::triangulate3(p,false,true,a,b,false,false); detail::emit_periodic_lifts(x,cb); }
 template<bool exact> template<class Points,class SimplexCallback>
 void AlphaShapes<exact>::fill_weighted_periodic_alpha_shapes(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { fill_weighted_periodic_alpha_shapes_direct(p,cb,a,b); }
 template<bool exact> template<class Points,class SimplexCallback>
 void AlphaShapes<exact>::fill_weighted_periodic_alpha_shapes_direct(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { auto x=detail::triangulate3(p,true,true,a,b); detail::emit_alpha(x,cb); }
 template<bool exact> template<class Points,class SimplexCallback>
-void AlphaShapes<exact>::fill_weighted_periodic_delaunay(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { auto x=detail::triangulate3(p,true,true,a,b); detail::emit_delaunay(x,cb); }
+void AlphaShapes<exact>::fill_weighted_periodic_delaunay(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { auto x=detail::triangulate3(p,true,true,a,b,false,false); detail::emit_delaunay(x,cb); }
 
 template<bool exact> template<class Points>
 std::array<typename Points::Real,3> AlphaShapes<exact>::circumcenter(const Points& p) {
@@ -759,10 +926,10 @@ void fill_periodic_alpha_shapes2d(const Points& p,const SimplexCallback& cb,std:
 template<bool exact,class Points,class SimplexCallback>
 void fill_periodic_alpha_shapes2d_direct(const Points& p,const SimplexCallback& cb,std::array<double,2> a,std::array<double,2> b) { auto x=detail::triangulate2(p,true,a,b); detail::emit_alpha(x,cb); }
 template<bool exact,class Points,class SimplexCallback>
-void fill_delaunay2d(const Points& p,const SimplexCallback& cb) { auto x=detail::triangulate2(p); detail::emit_delaunay(x,cb); }
+void fill_delaunay2d(const Points& p,const SimplexCallback& cb) { auto x=detail::triangulate2(p,false,{0,0},{1,1},false); detail::emit_delaunay(x,cb); }
 template<bool exact,class Points,class SimplexCallback>
-void fill_periodic_delaunay2d(const Points& p,const SimplexCallback& cb,std::array<double,2> a,std::array<double,2> b) { auto x=detail::triangulate2(p,true,a,b); detail::emit_delaunay(x,cb); }
+void fill_periodic_delaunay2d(const Points& p,const SimplexCallback& cb,std::array<double,2> a,std::array<double,2> b) { auto x=detail::triangulate2(p,true,a,b,false); detail::emit_delaunay(x,cb); }
 template<bool exact,class Points,class SimplexCallback>
-void fill_periodic_delaunay2d_lifts(const Points& p,const SimplexCallback& cb,std::array<double,2> a,std::array<double,2> b) { auto x=detail::triangulate2(p,true,a,b); detail::emit_periodic_lifts(x,cb); }
+void fill_periodic_delaunay2d_lifts(const Points& p,const SimplexCallback& cb,std::array<double,2> a,std::array<double,2> b) { auto x=detail::triangulate2(p,true,a,b,false); detail::emit_periodic_lifts(x,cb); }
 
 } // namespace diode
