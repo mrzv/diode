@@ -382,7 +382,7 @@ inline Complex<3> lower_dimensional_complex(
     GEO::SmartPointer<GEO::Delaunay> triangulation=weighted
         ? static_cast<GEO::Delaunay*>(new GEO::RegularWeightedDelaunay2d())
         : static_cast<GEO::Delaunay*>(new GEO::Delaunay2d());
-    triangulation->set_reorder(false);
+    triangulation->set_reorder(true);
     triangulation->set_vertices(vertices.size(),coordinates.data());
     for(GEO::index_t cell_index=0;cell_index<triangulation->nb_cells();++cell_index) {
         std::array<Vertex<3>,3> cell;
@@ -523,7 +523,7 @@ Complex<2> triangulate2(const Points& points, bool periodic=false,
     std::lock_guard<std::mutex> lock(geogram_triangulation_mutex());
     GEO::Numeric::random_reset();
     GEO::SmartPointer<GEO::Delaunay2d> dt=new GEO::Delaunay2d();
-    dt->set_reorder(false);
+    dt->set_reorder(true);
     dt->set_vertices(vertices.size(),coords.data());
     for(GEO::index_t c=0;c<dt->nb_cells();++c) {
         std::array<Vertex<2>,3> cell;
@@ -566,7 +566,7 @@ inline Complex<3> triangulate3_regular(
     GEO::SmartPointer<GEO::Delaunay> dt = weighted
         ? static_cast<GEO::Delaunay*>(new GEO::RegularWeightedDelaunay3d())
         : static_cast<GEO::Delaunay*>(new GEO::Delaunay3d());
-    dt->set_reorder(false);
+    dt->set_reorder(true);
     dt->set_vertices(vertices.size(),coordinates.data());
     for(GEO::index_t c=0;c<dt->nb_cells();++c) {
         std::array<Vertex<3>,4> cell;

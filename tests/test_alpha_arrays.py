@@ -45,7 +45,7 @@ def arrays_value_dict(res):
 
 
 def assert_maps_match(arrays, listed, *, exact):
-    """The arrays and list forms run the same deterministic backend."""
+    """The arrays and list exporters agree on generic nondegenerate inputs."""
     assert set(arrays) == set(listed), (
         f"simplex sets differ (arrays {len(arrays)}, list {len(listed)})")
     diffs = np.array([abs(arrays[k] - listed[k]) for k in arrays]) if arrays else np.array([0.0])
