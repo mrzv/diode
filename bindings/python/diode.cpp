@@ -1065,8 +1065,8 @@ PYBIND11_MODULE(diode, m)
     m.def("fill_weighted_alpha_shapes",  &fill_weighted_alpha_shape,
           "data"_a, "exact"_a = false, "with_attachment"_a = false,
           "returns (sorted) alpha shape filtration of the weighted input points "
-          "(4-column array x,y,z,weight). Uses the fast weighted Delaunay-direct "
-          "path (Regular_triangulation_3 + Edelsbrunner). with_attachment=True is "
+          "(4-column array x,y,z,weight). Uses Geogram BPOW and compact "
+          "top-down alpha assignment in 3D. with_attachment=True is "
           "not yet supported.");
     m.def("fill_weighted_alpha_shapes_slow",  &fill_weighted_alpha_shape_slow,
           "data"_a, "exact"_a = false, "with_attachment"_a = false,

@@ -2,6 +2,11 @@
 #include <geogram/delaunay/delaunay.h>
 #include <geogram/delaunay/delaunay_2d.h>
 #include <geogram/delaunay/delaunay_3d.h>
+#include <geogram/basic/geometry.h>
+#include <geogram/numerics/predicates.h>
+#include <geogram/numerics/expansion_nt.h>
+#include <geogram/delaunay/periodic_delaunay_3d.h>
+#include <cstdint>
 
 #include <algorithm>
 #include <cmath>
@@ -177,9 +182,146 @@ bool solve(std::array<std::array<double,M>,M> a, std::array<double,M> b,
     return true;
 }
 
+template<std::size_t N>
+bool sphere3_expansion_offset(const std::array<Point<3>,N>& p,
+                              const std::array<double,N>& w,
+                              std::array<long double,3>& offset) {
+    // Only ill-conditioned constructions take this allocating path. Exact
+    // numerators and denominators retain full-rank simplices even when their
+    // determinant is smaller than floating-point elimination can resolve.
+    initialize_geogram();
+    using Exact=GEO::expansion_nt;
+    std::array<std::array<Exact,3>,N-1> v;
+    std::array<Exact,N-1> rhs;
+    for(std::size_t i=0;i<N-1;++i) {
+        Exact norm(0.0);
+        for(std::size_t d=0;d<3;++d) {
+            v[i][d]=Exact(p[i+1][d])-Exact(p[0][d]);
+            norm+=GEO::expansion_nt_square(v[i][d]);
+        }
+        rhs[i]=(norm+w[0]-w[i+1])*0.5;
+    }
+    if constexpr(N==3) {
+        std::array<Exact,3> normal,q;
+        Exact determinant(0.0);
+        for(std::size_t d=0;d<3;++d) {
+            const std::size_t j=(d+1)%3,k=(d+2)%3;
+            normal[d]=v[0][j]*v[1][k]-v[0][k]*v[1][j];
+            determinant+=GEO::expansion_nt_square(normal[d]);
+            q[d]=rhs[0]*v[1][d]-rhs[1]*v[0][d];
+        }
+        if(determinant.sign()==GEO::ZERO) return false;
+        const long double denominator=determinant.estimate();
+        for(std::size_t d=0;d<3;++d) {
+            const std::size_t j=(d+1)%3,k=(d+2)%3;
+            offset[d]=static_cast<long double>(
+                (q[j]*normal[k]-q[k]*normal[j]).estimate())/denominator;
+        }
+    } else {
+        static_assert(N==4,"exact sphere construction expects a facet or tetrahedron");
+        const Exact determinant=GEO::det3x3(
+            v[0][0],v[0][1],v[0][2],
+            v[1][0],v[1][1],v[1][2],
+            v[2][0],v[2][1],v[2][2]);
+        if(determinant.sign()==GEO::ZERO) return false;
+        const long double denominator=determinant.estimate();
+        for(std::size_t d=0;d<3;++d) {
+            const Exact numerator=GEO::det3x3(
+                d==0 ? rhs[0] : v[0][0],d==1 ? rhs[0] : v[0][1],d==2 ? rhs[0] : v[0][2],
+                d==0 ? rhs[1] : v[1][0],d==1 ? rhs[1] : v[1][1],d==2 ? rhs[1] : v[1][2],
+                d==0 ? rhs[2] : v[2][0],d==1 ? rhs[2] : v[2][1],d==2 ? rhs[2] : v[2][2]);
+            offset[d]=static_cast<long double>(numerator.estimate())/denominator;
+        }
+    }
+    return true;
+}
+
 template<std::size_t N, std::size_t D>
 double sphere(const std::array<Point<D>,N>& p,const std::array<double,N>& w,
               Point<D>* center_out) {
+    if constexpr(D==3 && N>1) {
+        // Work in the vertex-relative frame and round only the constructed
+        // center/radius. Normal equations square the condition number of skinny
+        // tetrahedra; extended intermediates also retain small weight differences.
+        std::array<std::array<long double,3>,N-1> v{};
+        std::array<long double,N-1> rhs{},norms{};
+        for(std::size_t i=0;i<N-1;++i) {
+            long double norm=0.0L;
+            for(std::size_t d=0;d<3;++d) {
+                v[i][d]=static_cast<long double>(p[i+1][d])-p[0][d];
+                norm+=v[i][d]*v[i][d];
+            }
+            norms[i]=norm;
+            rhs[i]=0.5L*(norm+(static_cast<long double>(w[0])-w[i+1]));
+        }
+        std::array<long double,3> offset{};
+        if constexpr(N==2) {
+            if(norms[0]==0.0L) return std::numeric_limits<double>::infinity();
+            const long double scale=rhs[0]/norms[0];
+            for(std::size_t d=0;d<3;++d) offset[d]=scale*v[0][d];
+        } else if constexpr(N==3) {
+            // The cross-product norm does not subtract nearly equal Gram
+            // products when the triangle is almost collinear.
+            std::array<long double,3> normal{},q{};
+            long double determinant=0.0L;
+            for(std::size_t d=0;d<3;++d) {
+                const std::size_t j=(d+1)%3,k=(d+2)%3;
+                normal[d]=v[0][j]*v[1][k]-v[0][k]*v[1][j];
+                determinant+=normal[d]*normal[d];
+                q[d]=rhs[0]*v[1][d]-rhs[1]*v[0][d];
+            }
+            if(determinant<=1e-12L*norms[0]*norms[1]) {
+                if(!sphere3_expansion_offset(p,w,offset))
+                    return std::numeric_limits<double>::infinity();
+            } else {
+                for(std::size_t d=0;d<3;++d) {
+                    const std::size_t j=(d+1)%3,k=(d+2)%3;
+                    offset[d]=(q[j]*normal[k]-q[k]*normal[j])/determinant;
+                }
+            }
+        } else {
+            static_assert(N==4,"a 3D sphere has at most four defining points");
+            // Solve the original power equations instead of a Gram system.
+            long double matrix_scale=0.0L;
+            for(const auto& row:v) for(long double value:row)
+                matrix_scale=std::max(matrix_scale,std::abs(value));
+            bool use_expansion=false;
+            for(std::size_t column=0;column<3;++column) {
+                std::size_t pivot=column;
+                for(std::size_t row=column+1;row<3;++row)
+                    if(std::abs(v[row][column])>std::abs(v[pivot][column])) pivot=row;
+                // This is an accuracy filter, not a degeneracy tolerance.
+                if(std::abs(v[pivot][column])<=1e-6L*matrix_scale) {
+                    use_expansion=true;
+                    break;
+                }
+                std::swap(v[column],v[pivot]);
+                std::swap(rhs[column],rhs[pivot]);
+                for(std::size_t row=column+1;row<3;++row) {
+                    const long double factor=v[row][column]/v[column][column];
+                    for(std::size_t d=column+1;d<3;++d)
+                        v[row][d]-=factor*v[column][d];
+                    rhs[row]-=factor*rhs[column];
+                }
+            }
+            if(use_expansion) {
+                if(!sphere3_expansion_offset(p,w,offset))
+                    return std::numeric_limits<double>::infinity();
+            } else {
+                for(std::size_t row=3;row-- >0;) {
+                    long double value=rhs[row];
+                    for(std::size_t d=row+1;d<3;++d) value-=v[row][d]*offset[d];
+                    offset[row]=value/v[row][row];
+                }
+            }
+        }
+        long double radius=-static_cast<long double>(w[0]);
+        for(std::size_t d=0;d<3;++d) {
+            if(center_out) (*center_out)[d]=static_cast<double>(p[0][d]+offset[d]);
+            radius+=offset[d]*offset[d];
+        }
+        return static_cast<double>(radius);
+    }
     Point<D> center=p[0];
     if constexpr(N > 1) {
         constexpr std::size_t M=N-1;
@@ -867,12 +1009,18 @@ template<class CB> void emit_periodic_lifts(const Complex<3>& x,const CB& cb) {
     emit_lifts(x.v,cb); emit_lifts(x.e,cb); emit_lifts(x.f,cb); emit_lifts(x.c,cb);
 }
 
+#include "compact_alpha3.hpp"
+#include "compact_periodic3.hpp"
+
 } // namespace detail
 
 template<bool exact> template<class Points,class SimplexCallback>
 void AlphaShapes<exact>::fill_alpha_shapes(const Points& p,const SimplexCallback& cb) { fill_alpha_shapes_direct(p,cb); }
 template<bool exact> template<class Points,class SimplexCallback>
-void AlphaShapes<exact>::fill_alpha_shapes_direct(const Points& p,const SimplexCallback& cb) { auto x=detail::triangulate3(p); detail::emit_alpha(x,cb); }
+void AlphaShapes<exact>::fill_alpha_shapes_direct(const Points& p,const SimplexCallback& cb) {
+    if(detail::try_compact_alpha3(p,cb,false)) return;
+    auto x=detail::triangulate3(p); detail::emit_alpha(x,cb);
+}
 template<bool exact> template<class Points,class SimplexCallback>
 void AlphaShapes<exact>::fill_alpha_shapes_with_attachment(const Points& p,const SimplexCallback& cb) { fill_alpha_shapes_direct_with_attachment(p,cb); }
 template<bool exact> template<class Points,class SimplexCallback>
@@ -880,11 +1028,17 @@ void AlphaShapes<exact>::fill_alpha_shapes_direct_with_attachment(const Points& 
 template<bool exact> template<class Points,class SimplexCallback>
 void AlphaShapes<exact>::fill_weighted_alpha_shapes(const Points& p,const SimplexCallback& cb) { fill_weighted_alpha_shapes_direct(p,cb); }
 template<bool exact> template<class Points,class SimplexCallback>
-void AlphaShapes<exact>::fill_weighted_alpha_shapes_direct(const Points& p,const SimplexCallback& cb) { auto x=detail::triangulate3(p,true); detail::emit_alpha(x,cb); }
+void AlphaShapes<exact>::fill_weighted_alpha_shapes_direct(const Points& p,const SimplexCallback& cb) {
+    if(detail::try_compact_alpha3(p,cb,true)) return;
+    auto x=detail::triangulate3(p,true); detail::emit_alpha(x,cb);
+}
 template<bool exact> template<class Points,class SimplexCallback>
 void AlphaShapes<exact>::fill_periodic_alpha_shapes(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { fill_periodic_alpha_shapes_direct(p,cb,a,b); }
 template<bool exact> template<class Points,class SimplexCallback>
-void AlphaShapes<exact>::fill_periodic_alpha_shapes_direct(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { auto x=detail::triangulate3(p,false,true,a,b); detail::emit_alpha(x,cb); }
+void AlphaShapes<exact>::fill_periodic_alpha_shapes_direct(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) {
+    if(detail::try_compact_periodic3(p,cb,a,b)) return;
+    auto x=detail::triangulate3(p,false,true,a,b); detail::emit_alpha(x,cb);
+}
 template<bool exact> template<class Points,class SimplexCallback>
 void AlphaShapes<exact>::fill_delaunay(const Points& p,const SimplexCallback& cb) { auto x=detail::triangulate3(p,false,false,{0,0,0},{1,1,1},true,false); detail::emit_delaunay(x,cb); }
 template<bool exact> template<class Points,class SimplexCallback>

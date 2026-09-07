@@ -7,6 +7,24 @@ Dionysus_ understands. Geogram is fetched and built automatically by CMake.
 
 **Geometry backend:** Geogram 1.9.9 (BSD-3-Clause)
 
+The plain 3D ordinary and weighted alpha exporters use compact cell/edge
+storage and assign filtration values from tetrahedra down to vertices.
+Ordinary triangulations use Geogram's PDEL backend; weighted triangulations
+use BPOW, with hidden sites omitted. BRIO-Hilbert reordering remains enabled.
+Weighted tetrahedral power centers are computed from the original linear
+equations rather than a Gram system.
+
+The unweighted periodic 3D alpha exporter uses Geogram's native periodic
+triangulation, including rectangular domains, instead of triangulating 27
+explicit copies of every point. Periodic copies are identified by original
+vertex IDs only after checking that their relative lattice offsets agree.
+Inputs unsupported by the native path retain the general implementation's
+handling. The attachment, 2D, weighted-periodic, and combinatorics exporters
+continue to use the general implementation.
+
+These paths are shared by the list and NumPy-array alpha exporters; the
+list exporter still sorts the filtration, while arrays remain unsorted.
+
 Get, Build, Install
 -------------------
 
@@ -174,10 +192,13 @@ Exactness
 ~~~~~~~~~
 
 All functions retain the ``exact`` argument for API compatibility. Geogram uses
-robust exact predicates for Delaunay and regular-triangulation decisions and
-double-precision constructions for circumcenters and alpha values. Consequently
-``exact=False`` and ``exact=True`` now select the same backend and produce the
-same numerical construction type.
+robust exact predicates for Delaunay and regular-triangulation decisions.
+Circumcenters and alpha values are returned as doubles, not exact numbers.
+The shared 3D sphere solver uses translated long-double intermediates and
+adaptive expansion arithmetic for ill-conditioned facets and tetrahedra before
+floating-point division. This improves conditioning without providing exact
+alpha comparisons. ``exact=False`` and ``exact=True`` select the same backend
+and numerical construction type.
 
 
 License
