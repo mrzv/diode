@@ -73,6 +73,7 @@ FetchContent_Declare(
     EXCLUDE_FROM_ALL
 )
 FetchContent_MakeAvailable(geogram)
+include(cmake/GeogramPeriodic.cmake)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(geogram PRIVATE -w)
 endif()

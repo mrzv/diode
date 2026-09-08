@@ -1,258 +1,326 @@
 // Included inside diode::detail, after the generic geometry helpers.
 
-struct compact_periodic_sphere {
-    Point<3> center{};
-    double alpha=std::numeric_limits<double>::infinity();
-};
-
-inline Point<3> compact_periodic_subtract(const Point<3>& a,const Point<3>& b) {
-    return {a[0]-b[0],a[1]-b[1],a[2]-b[2]};
+[[noreturn]] inline void periodic3_covering_error() {
+    throw std::runtime_error("Cannot convert periodic triangulation to a one-sheeted covering");
 }
 
-inline double compact_periodic_dot(const Point<3>& a,const Point<3>& b) {
-    return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
-}
-
-inline Point<3> compact_periodic_point(
-    const GEO::PeriodicDelaunay3d& triangulation,GEO::index_t vertex
-) {
-    const GEO::vec3 p=triangulation.vertex(vertex);
-    return {p.x,p.y,p.z};
-}
-
-inline compact_periodic_sphere compact_periodic_edge_sphere(
-    const Point<3>& p0,const Point<3>& p1
-) {
-    const auto delta=compact_periodic_subtract(p1,p0);
-    return {{p0[0]+0.5*delta[0],p0[1]+0.5*delta[1],p0[2]+0.5*delta[2]},
-            0.25*compact_periodic_dot(delta,delta)};
-}
-
-inline compact_periodic_sphere compact_periodic_triangle_sphere(
-    const Point<3>& p0,const Point<3>& p1,const Point<3>& p2
-) {
-    const auto d1=compact_periodic_subtract(p1,p0);
-    const auto d2=compact_periodic_subtract(p2,p0);
-    const double g11=compact_periodic_dot(d1,d1);
-    const double g12=compact_periodic_dot(d1,d2);
-    const double g22=compact_periodic_dot(d2,d2);
-    const Point<3> normal{d1[1]*d2[2]-d1[2]*d2[1],
-                          d1[2]*d2[0]-d1[0]*d2[2],
-                          d1[0]*d2[1]-d1[1]*d2[0]};
-    const double determinant=compact_periodic_dot(normal,normal);
-    if(!(determinant>0.0)) return {};
-    const double a=0.5*g22*(g11-g12)/determinant;
-    const double b=0.5*g11*(g22-g12)/determinant;
-    const Point<3> delta{a*d1[0]+b*d2[0],a*d1[1]+b*d2[1],a*d1[2]+b*d2[2]};
-    return {{p0[0]+delta[0],p0[1]+delta[1],p0[2]+delta[2]},
-            compact_periodic_dot(delta,delta)};
-}
-
-inline compact_periodic_sphere compact_periodic_tetra_sphere(
-    const std::array<Point<3>,4>& points
-) {
-    // Solve in a vertex-relative frame, avoiding differences of large norms.
-    std::array<std::array<double,4>,3> matrix{};
-    for(std::size_t row=0;row<3;++row) {
-        const auto delta=compact_periodic_subtract(points[row+1],points[0]);
-        for(std::size_t d=0;d<3;++d) matrix[row][d]=delta[d];
-        matrix[row][3]=0.5*compact_periodic_dot(delta,delta);
-    }
-    for(std::size_t column=0;column<3;++column) {
-        std::size_t pivot=column;
-        for(std::size_t row=column+1;row<3;++row)
-            if(std::abs(matrix[row][column])>std::abs(matrix[pivot][column])) pivot=row;
-        if(matrix[pivot][column]==0.0) return {};
-        std::swap(matrix[pivot],matrix[column]);
-        const double divisor=matrix[column][column];
-        for(std::size_t j=column;j<4;++j) matrix[column][j]/=divisor;
-        for(std::size_t row=0;row<3;++row) {
-            if(row==column) continue;
-            const double factor=matrix[row][column];
-            for(std::size_t j=column;j<4;++j) matrix[row][j]-=factor*matrix[column][j];
-        }
-    }
-    const Point<3> delta{matrix[0][3],matrix[1][3],matrix[2][3]};
-    return {{points[0][0]+delta[0],points[0][1]+delta[1],points[0][2]+delta[2]},
-            compact_periodic_dot(delta,delta)};
-}
-
-inline bool compact_periodic_inside(
-    const compact_periodic_sphere& sphere,const Point<3>& witness
-) {
-    const auto delta=compact_periodic_subtract(sphere.center,witness);
-    return compact_periodic_dot(delta,delta)<sphere.alpha;
-}
-
-template<std::size_t N>
-std::array<unsigned,N> compact_periodic_key(std::array<unsigned,N> vertices) {
-    std::sort(vertices.begin(),vertices.end());
-    return vertices;
-}
-
-template<std::size_t N>
-using compact_periodic_values=
-    std::unordered_map<std::array<unsigned,N>,double,VertexKeyHash<N>>;
-
-template<std::size_t N>
-void compact_periodic_relax(
-    compact_periodic_values<N>& values,const std::array<unsigned,N>& key,double alpha
-) {
-    auto inserted=values.emplace(key,alpha);
-    if(!inserted.second) inserted.first->second=std::min(inserted.first->second,alpha);
-}
-
-struct compact_periodic_edge {
-    std::array<int,3> offset{};
-    double own_alpha=std::numeric_limits<double>::infinity();
-    double minimum_facet_alpha=std::numeric_limits<double>::infinity();
-    bool gabriel=true;
-};
-
-template<class Points,class CB>
-bool try_compact_periodic3(
-    const Points& p,const CB& cb,std::array<double,3> from,std::array<double,3> to
-) {
-    initialize_geogram();
-    const auto vertices=unique_points<Points,3>(p,false,&from);
+inline Point<3> periodic3_extent(const Point<3>& from,const Point<3>& to) {
     Point<3> period{};
     for(std::size_t d=0;d<3;++d) {
         period[d]=to[d]-from[d];
-        if(!std::isfinite(from[d]) || !std::isfinite(to[d]) ||
-           !std::isfinite(period[d]) || !(period[d]>0.0)) return false;
-        // Leave out-of-domain input to the existing API implementation rather
-        // than changing its contract by wrapping or discarding sites.
-        for(const auto& vertex:vertices)
-            if(!(vertex.point[d]>=0.0 && vertex.point[d]<period[d])) return false;
+        if(!std::isfinite(from[d]) || !std::isfinite(to[d]) || !std::isfinite(period[d]))
+            throw std::runtime_error("periodic domain bounds and extents must be finite");
+        if(!(period[d]>0.0))
+            throw std::runtime_error("periodic domain is empty or inverted: require from[k] < to[k] on every axis");
     }
-    // The native backend starts with an ordinary, full-dimensional tetrahedron.
-    if(!compact_alpha3_full_dimension(vertices)) return false;
-    if(vertices.size()>std::numeric_limits<GEO::index_t>::max()/27) return false;
-    std::vector<double> coordinates;
-    coordinates.reserve(3*vertices.size());
-    for(const auto& vertex:vertices)
-        for(double coordinate:vertex.point) coordinates.push_back(coordinate);
+    return period;
+}
 
-    compact_periodic_values<4> cells;
-    compact_periodic_values<3> facets;
-    std::unordered_map<std::array<unsigned,2>,compact_periodic_edge,VertexKeyHash<2>> edges;
+struct Periodic3Alpha {
+    Point<3> center{};
+    double own=std::numeric_limits<double>::infinity();
+    double alpha=std::numeric_limits<double>::infinity();
+    bool gabriel=true;
+};
+struct Periodic3NoAlpha {};
+template<bool Alpha> using Periodic3Value=std::conditional_t<Alpha,Periodic3Alpha,Periodic3NoAlpha>;
+template<bool Alpha> struct Periodic3Edge: Periodic3Value<Alpha> {
+    std::array<int,3> offset{};
+};
+template<bool Alpha> struct Periodic3Facet: Periodic3Value<Alpha> {
+    unsigned cofaces=0;
+};
+struct Periodic3CellAlpha { double alpha=std::numeric_limits<double>::infinity(); };
+
+template<bool Alpha> struct Periodic3Complex {
+    std::vector<Vertex<3>> vertices;
+    Point<3> period{};
+    std::vector<unsigned char> visible;
+    std::unordered_map<std::array<unsigned,2>,Periodic3Edge<Alpha>,VertexKeyHash<2>> edges;
+    std::unordered_map<std::array<unsigned,3>,Periodic3Facet<Alpha>,VertexKeyHash<3>> facets;
+    std::unordered_map<std::array<unsigned,4>,std::conditional_t<Alpha,Periodic3CellAlpha,Periodic3NoAlpha>,VertexKeyHash<4>> cells;
+
+    template<std::size_t N>
+    std::array<Vertex<3>,N> simplex(const std::array<unsigned,N>& key) const {
+        std::array<Vertex<3>,N> result{};
+        for(std::size_t i=0;i<N;++i) {
+            result[i]=vertices[key[i]];
+            if(i!=0) result[i].offset=edges.at({key[0],key[i]}).offset;
+            else result[i].offset={};
+            for(std::size_t d=0;d<3;++d)
+                result[i].point[d]+=result[i].offset[d]*period[d];
+        }
+        return result;
+    }
+
+    template<std::size_t N>
+    std::array<std::array<int,3>,N> offsets(const std::array<unsigned,N>& key) const {
+        std::array<std::array<int,3>,N> result{};
+        for(std::size_t i=1;i<N;++i) {
+            const auto& native=edges.at({key[0],key[i]}).offset;
+            for(std::size_t d=0;d<3;++d) {
+                const long long value=static_cast<long long>(native[d])+
+                    vertices[key[i]].offset[d]-vertices[key[0]].offset[d];
+                if(value<std::numeric_limits<int>::min() || value>std::numeric_limits<int>::max())
+                    periodic3_covering_error();
+                result[i][d]=static_cast<int>(value);
+            }
+        }
+        return result;
+    }
+};
+
+template<std::size_t N>
+std::array<unsigned,N-1> periodic3_face(const std::array<unsigned,N>& key,std::size_t omit) {
+    std::array<unsigned,N-1> face{};
+    std::size_t next=0;
+    for(std::size_t i=0;i<N;++i) if(i!=omit) face[next++]=key[i];
+    return face;
+}
+
+template<std::size_t N>
+void periodic3_sphere(Periodic3Alpha& value,const std::array<Vertex<3>,N>& simplex) {
+    std::array<Point<3>,N> points{};
+    std::array<double,N> weights{};
+    for(std::size_t i=0;i<N;++i) { points[i]=simplex[i].point; weights[i]=simplex[i].weight; }
+    value.own=sphere(points,weights,&value.center);
+    if(!std::isfinite(value.own)) throw std::runtime_error("non-finite alpha radius");
+}
+
+inline void periodic3_witness(Periodic3Alpha& value,const Vertex<3>& witness,
+                              const Point<3>& shift) {
+    if(!value.gabriel) return;
+    long double power=-static_cast<long double>(witness.weight);
+    for(std::size_t d=0;d<3;++d) {
+        const long double delta=static_cast<long double>(value.center[d])-witness.point[d]-shift[d];
+        power+=delta*delta;
+    }
+    const long double tolerance=128.0L*std::numeric_limits<double>::epsilon()*
+        std::max(std::abs(static_cast<long double>(value.own)),std::abs(power));
+    if(power<value.own-tolerance) value.gabriel=false;
+}
+
+template<bool Alpha>
+Periodic3Complex<Alpha> acquire_periodic3(std::vector<Vertex<3>> vertices,bool weighted,
+                                         const Point<3>& period) {
+    Periodic3Complex<Alpha> out;
+    out.period=period;
+    // Preserve the established empty result for fewer than four unique sites.
+    if(vertices.size()<4) return out;
+    bool wrapped=false;
+    for(auto& vertex:vertices) for(std::size_t d=0;d<3;++d) {
+        if(vertex.point[d]>=0.0 && vertex.point[d]<period[d]) continue;
+        wrapped=true;
+        const long double coordinate=vertex.point[d];
+        const long double quotient=std::floor(coordinate/period[d]);
+        if(!std::isfinite(coordinate) || -quotient<std::numeric_limits<int>::min() ||
+           -quotient>std::numeric_limits<int>::max()) periodic3_covering_error();
+        vertex.offset[d]=static_cast<int>(-quotient);
+        vertex.point[d]=static_cast<double>(coordinate-quotient*period[d]);
+        // Keep a rounded upper endpoint inside the half-open native domain
+        // without identifying a nearby negative site with the exact origin.
+        if(vertex.point[d]>=period[d]) vertex.point[d]=std::nextafter(period[d],0.0);
+    }
+    if(wrapped) {
+        // Period-equivalent sites must obey the same strongest-weight/latest-ID
+        // selection rule as coincident input coordinates.
+        std::map<Point<3>,Vertex<3>> selected;
+        for(const auto& vertex:vertices) {
+            auto inserted=selected.emplace(vertex.point,vertex);
+            if(!inserted.second) {
+                auto& previous=inserted.first->second;
+                if(vertex.weight>previous.weight ||
+                   (vertex.weight==previous.weight && vertex.id>previous.id)) previous=vertex;
+            }
+        }
+        vertices.clear();
+        for(const auto& item:selected) vertices.push_back(item.second);
+        if(vertices.size()<4) return out;
+    }
+    // Native initialization requires a tetrahedron of real sites. A flat cloud
+    // cannot define the unique simplicial one-sheeted covering exported here.
+    if(!compact_alpha3_full_dimension(vertices)) periodic3_covering_error();
+    if(vertices.size()>std::numeric_limits<GEO::index_t>::max()/27)
+        throw std::runtime_error("too many Geogram periodic vertices");
+    // Internal keys have the same ordering as the public input IDs.
+    std::sort(vertices.begin(),vertices.end(),[](const auto& a,const auto& b) { return a.id<b.id; });
+    out.vertices=std::move(vertices);
+    const std::size_t count=out.vertices.size();
+    out.visible.assign(count,0);
+    std::vector<double> coordinates;
+    std::vector<double> weights;
+    coordinates.reserve(3*count);
+    if(weighted) weights.reserve(count);
+    double max_weight=0.0;
+    if(weighted) {
+        max_weight=out.vertices.front().weight;
+        for(const auto& vertex:out.vertices) max_weight=std::max(max_weight,vertex.weight);
+    }
+    for(const auto& vertex:out.vertices) {
+        for(double coordinate:vertex.point) coordinates.push_back(coordinate);
+        // A common weight offset cannot change the regular triangulation.
+        // Remove it before Geogram forms rounded lifted coordinates.
+        if(weighted) weights.push_back(vertex.weight-max_weight);
+    }
     {
         std::lock_guard<std::mutex> lock(geogram_triangulation_mutex());
         GEO::Numeric::random_reset();
         GEO::PeriodicDelaunay3d triangulation(GEO::vec3(period[0],period[1],period[2]));
-        triangulation.set_vertices(static_cast<GEO::index_t>(vertices.size()),coordinates.data());
+        triangulation.set_vertices(static_cast<GEO::index_t>(count),coordinates.data());
+        if(weighted) triangulation.set_weights(weights.data());
         triangulation.compute();
-        if(triangulation.has_empty_cells() || triangulation.cell_size()!=4 ||
-           triangulation.nb_cells()==0) return false;
-
-        const std::size_t occurrence_count=triangulation.nb_cells();
-        std::vector<double> occurrence_alpha(occurrence_count);
-        cells.reserve(occurrence_count);
-        edges.reserve(occurrence_count);
+        // An aborted computation is not a triangulation with hidden sites.
+        if(triangulation.has_empty_cells() || triangulation.cell_size()!=4 || triangulation.nb_cells()==0)
+            throw std::runtime_error("Geogram did not produce a complete periodic triangulation");
+        out.cells.reserve(triangulation.nb_cells());
+        out.edges.reserve(triangulation.nb_cells());
         for(GEO::index_t cell=0;cell<triangulation.nb_cells();++cell) {
-            std::array<unsigned,4> ids{};
-            std::array<Point<3>,4> points{};
-            std::array<std::array<int,3>,4> offsets{};
+            std::array<std::pair<unsigned,std::array<int,3>>,4> sites{};
             for(GEO::index_t local=0;local<4;++local) {
                 const auto pv=triangulation.cell_vertex(cell,local);
-                ids[local]=vertices[triangulation.periodic_vertex_real(pv)].id;
-                points[local]=compact_periodic_point(triangulation,pv);
-                triangulation.periodic_vertex_get_T(
-                    pv,offsets[local][0],offsets[local][1],offsets[local][2]
-                );
+                if(pv>=27*count) throw std::runtime_error("invalid Geogram periodic vertex");
+                sites[local].first=triangulation.periodic_vertex_real(pv);
+                auto& offset=sites[local].second;
+                triangulation.periodic_vertex_get_T(pv,offset[0],offset[1],offset[2]);
             }
-            const auto key=compact_periodic_key(ids);
-            if(std::adjacent_find(key.begin(),key.end())!=key.end()) return false;
-            const double alpha=compact_periodic_tetra_sphere(points).alpha;
-            if(!std::isfinite(alpha)) return false;
-            occurrence_alpha[cell]=alpha;
-            compact_periodic_relax(cells,key,alpha);
-
-            for(std::size_t i=0;i<4;++i) for(std::size_t j=i+1;j<4;++j) {
-                const std::size_t a=ids[i]<ids[j] ? i : j;
-                const std::size_t b=ids[i]<ids[j] ? j : i;
-                const std::array<unsigned,2> edge_key{ids[a],ids[b]};
-                std::array<int,3> offset{};
-                for(std::size_t d=0;d<3;++d) offset[d]=offsets[b][d]-offsets[a][d];
-                auto inserted=edges.try_emplace(edge_key);
-                auto& edge=inserted.first->second;
-                if(inserted.second) edge.offset=offset;
-                else if(edge.offset!=offset) return false;
-                // Equality of every edge lift implies equality of the lift of
-                // every higher simplex. Never min-reduce distinct coverings.
-                const auto sphere=compact_periodic_edge_sphere(points[a],points[b]);
-                if(!std::isfinite(sphere.alpha)) return false;
-                edge.own_alpha=std::min(edge.own_alpha,sphere.alpha);
-                if(edge.gabriel)
-                    for(std::size_t k=0;k<4;++k)
-                        if(k!=a && k!=b && compact_periodic_inside(sphere,points[k]))
-                            edge.gabriel=false;
-            }
-        }
-
-        facets.reserve(2*cells.size());
-        for(GEO::index_t cell=0;cell<triangulation.nb_cells();++cell) {
-            for(GEO::index_t opposite=0;opposite<4;++opposite) {
-                const auto adjacent=triangulation.cell_adjacent(cell,opposite);
-                // Compressed boundary copies may lack an opposite cell. An
-                // equivalent complete copy supplies both Gabriel witnesses.
-                if(adjacent==GEO::NO_INDEX || adjacent<cell) continue;
-                std::array<unsigned,3> ids{};
-                std::array<Point<3>,3> points{};
-                std::size_t next=0;
-                for(GEO::index_t local=0;local<4;++local) if(local!=opposite) {
-                    const auto pv=triangulation.cell_vertex(cell,local);
-                    ids[next]=vertices[triangulation.periodic_vertex_real(pv)].id;
-                    points[next++]=compact_periodic_point(triangulation,pv);
+            std::sort(sites.begin(),sites.end(),[](const auto& a,const auto& b) { return a.first<b.first; });
+            std::array<unsigned,4> key{};
+            for(std::size_t i=0;i<4;++i) {
+                key[i]=sites[i].first;
+                if(i!=0 && key[i]==key[i-1]) periodic3_covering_error();
+                out.visible[key[i]]=1;
+                for(std::size_t j=0;j<i;++j) {
+                    std::array<int,3> offset{};
+                    for(std::size_t d=0;d<3;++d) offset[d]=sites[i].second[d]-sites[j].second[d];
+                    auto inserted=out.edges.try_emplace({key[j],key[i]});
+                    if(inserted.second) {
+                        inserted.first->second.offset=offset;
+                        // Validate input-relative lift range before any emitter.
+                        (void)out.offsets(std::array<unsigned,2>{key[j],key[i]});
+                    }
+                    else if(inserted.first->second.offset!=offset) periodic3_covering_error();
                 }
-                const auto sphere=compact_periodic_triangle_sphere(points[0],points[1],points[2]);
-                if(!std::isfinite(sphere.alpha)) return false;
-                GEO::index_t adjacent_opposite=0;
-                while(adjacent_opposite<4 &&
-                      triangulation.cell_adjacent(adjacent,adjacent_opposite)!=cell)
-                    ++adjacent_opposite;
-                if(adjacent_opposite==4) return false;
-                const bool gabriel=!compact_periodic_inside(
-                    sphere,compact_periodic_point(triangulation,triangulation.cell_vertex(cell,opposite))
-                ) && !compact_periodic_inside(
-                    sphere,compact_periodic_point(
-                        triangulation,triangulation.cell_vertex(adjacent,adjacent_opposite)
-                    )
-                );
-                const double coface_alpha=std::min(occurrence_alpha[cell],occurrence_alpha[adjacent]);
-                compact_periodic_relax(
-                    facets,compact_periodic_key(ids),gabriel ? std::min(sphere.alpha,coface_alpha) : coface_alpha
-                );
             }
+            out.cells.try_emplace(key);
         }
-        // Clamp after canonical copy reduction: translated sphere solves can
-        // differ by ulps, but the face/coface inequality must hold exactly.
-        for(const auto& cell:cells) for(std::size_t removed=0;removed<4;++removed) {
-            std::array<unsigned,3> face{};
-            std::size_t next=0;
-            for(std::size_t i=0;i<4;++i) if(i!=removed) face[next++]=cell.first[i];
-            auto found=facets.find(face);
-            if(found==facets.end()) return false;
-            found->second=std::min(found->second,cell.second);
-        }
-        for(const auto& face:facets) for(std::size_t removed=0;removed<3;++removed) {
-            std::array<unsigned,2> edge_key{};
-            std::size_t next=0;
-            for(std::size_t i=0;i<3;++i) if(i!=removed) edge_key[next++]=face.first[i];
-            auto& edge=edges.at(edge_key);
-            edge.minimum_facet_alpha=std::min(edge.minimum_facet_alpha,face.second);
-        }
-        if(vertices.size()+facets.size()!=edges.size()+cells.size()) return false;
     }
-    // No user callback runs until dimensional and covering eligibility, and
-    // all assignments, have succeeded. The global backend lock is released.
-    for(const auto& vertex:vertices) cb(std::array<unsigned,1>{vertex.id},0.0);
-    for(const auto& item:edges) {
-        const auto& edge=item.second;
-        cb(item.first,edge.gabriel ? std::min(edge.own_alpha,edge.minimum_facet_alpha)
-                                  : edge.minimum_facet_alpha);
+    // Edge lifts determine all simplex lifts. Validate the entire covering
+    // before any callback, including all faces of compressed boundary copies.
+    out.facets.reserve(2*out.cells.size());
+    for(const auto& cell:out.cells) for(std::size_t omit=0;omit<4;++omit)
+        ++out.facets[periodic3_face(cell.first,omit)].cofaces;
+    for(const auto& face:out.facets) if(face.second.cofaces!=2) periodic3_covering_error();
+    const auto visible=static_cast<std::size_t>(std::count(out.visible.begin(),out.visible.end(),1));
+    if(!weighted && visible!=count) throw std::runtime_error("Geogram omitted an ordinary periodic vertex");
+    if(visible+out.facets.size()!=out.edges.size()+out.cells.size()) periodic3_covering_error();
+    return out;
+}
+
+template<class Points,bool Alpha>
+Periodic3Complex<Alpha> make_periodic3(const Points& points,bool weighted,
+                                      const Point<3>& from,const Point<3>& to) {
+    initialize_geogram();
+    const auto period=periodic3_extent(from,to);
+    if(points.size()>std::numeric_limits<unsigned>::max()) throw std::runtime_error("too many periodic points");
+    return acquire_periodic3<Alpha>(unique_points<Points,3>(points,weighted,&from),weighted,period);
+}
+
+inline std::vector<Periodic3Alpha> periodic3_alpha(Periodic3Complex<true>& out) {
+    std::vector<Periodic3Alpha> vertices(out.vertices.size());
+    for(std::size_t i=0;i<vertices.size();++i) if(out.visible[i])
+        periodic3_sphere(vertices[i],std::array<Vertex<3>,1>{out.vertices[i]});
+    for(auto& edge:out.edges) periodic3_sphere(edge.second,out.simplex(edge.first));
+    for(auto& face:out.facets) periodic3_sphere(face.second,out.simplex(face.first));
+    for(auto& cell:out.cells) {
+        const auto simplex=out.simplex(cell.first);
+        Periodic3Alpha value;
+        periodic3_sphere(value,simplex);
+        cell.second.alpha=value.own;
+        for(std::size_t omit=0;omit<4;++omit) {
+            const auto key=periodic3_face(cell.first,omit);
+            auto& face=out.facets.at(key);
+            Point<3> shift{};
+            const std::size_t first=omit==0 ? 1 : 0;
+            for(std::size_t d=0;d<3;++d) shift[d]=out.vertices[key[0]].point[d]-simplex[first].point[d];
+            periodic3_witness(face,simplex[omit],shift);
+            face.alpha=std::min(face.alpha,value.own);
+        }
     }
-    for(const auto& item:facets) cb(item.first,item.second);
-    for(const auto& item:cells) cb(item.first,item.second);
-    return true;
+    for(auto& face:out.facets) {
+        if(face.second.gabriel) face.second.alpha=std::min(face.second.alpha,face.second.own);
+        const auto simplex=out.simplex(face.first);
+        for(std::size_t omit=0;omit<3;++omit) {
+            const auto key=periodic3_face(face.first,omit);
+            auto& edge=out.edges.at(key);
+            Point<3> shift{};
+            const std::size_t first=omit==0 ? 1 : 0;
+            for(std::size_t d=0;d<3;++d) shift[d]=out.vertices[key[0]].point[d]-simplex[first].point[d];
+            periodic3_witness(edge,simplex[omit],shift);
+            edge.alpha=std::min(edge.alpha,face.second.alpha);
+        }
+    }
+    for(auto& edge:out.edges) {
+        if(edge.second.gabriel) edge.second.alpha=std::min(edge.second.alpha,edge.second.own);
+        const auto simplex=out.simplex(edge.first);
+        for(std::size_t i=0;i<2;++i) {
+            auto& vertex=vertices[edge.first[i]];
+            Point<3> shift{};
+            for(std::size_t d=0;d<3;++d) shift[d]=out.vertices[edge.first[i]].point[d]-simplex[i].point[d];
+            periodic3_witness(vertex,simplex[1-i],shift);
+            vertex.alpha=std::min(vertex.alpha,edge.second.alpha);
+        }
+    }
+    for(std::size_t i=0;i<vertices.size();++i) if(out.visible[i]) {
+        if(vertices[i].gabriel) vertices[i].alpha=std::min(vertices[i].alpha,vertices[i].own);
+        if(!std::isfinite(vertices[i].alpha)) throw std::runtime_error("non-finite alpha radius");
+    }
+    return vertices;
+}
+
+template<std::size_t N,bool Alpha>
+std::array<unsigned,N> periodic3_ids(const Periodic3Complex<Alpha>& out,std::array<unsigned,N> key) {
+    for(auto& index:key) index=out.vertices[index].id;
+    return key;
+}
+
+template<class Points,class CB>
+void fill_compact_periodic3_alpha(const Points& points,const CB& cb,bool weighted,
+                                  const Point<3>& from,const Point<3>& to) {
+    auto out=make_periodic3<Points,true>(points,weighted,from,to);
+    const auto vertices=periodic3_alpha(out);
+    for(std::size_t i=0;i<vertices.size();++i) if(out.visible[i])
+        cb(std::array<unsigned,1>{out.vertices[i].id},vertices[i].alpha);
+    for(const auto& edge:out.edges) cb(periodic3_ids(out,edge.first),edge.second.alpha);
+    for(const auto& face:out.facets) cb(periodic3_ids(out,face.first),face.second.alpha);
+    for(const auto& cell:out.cells) cb(periodic3_ids(out,cell.first),cell.second.alpha);
+}
+
+template<bool Lifts,class Points,class CB>
+void fill_compact_periodic3_delaunay(const Points& points,const CB& cb,bool weighted,
+                                     const Point<3>& from,const Point<3>& to) {
+    const auto out=make_periodic3<Points,false>(points,weighted,from,to);
+    const auto emit=[&](const auto& key) {
+        const auto ids=periodic3_ids(out,key);
+        if constexpr(Lifts) {
+            cb(ids,out.offsets(key));
+        } else cb(ids);
+    };
+    for(std::size_t i=0;i<out.vertices.size();++i) if(out.visible[i]) emit(std::array<unsigned,1>{static_cast<unsigned>(i)});
+    for(const auto& edge:out.edges) emit(edge.first);
+    for(const auto& face:out.facets) emit(face.first);
+    for(const auto& cell:out.cells) emit(cell.first);
+}
+
+inline Complex<3> triangulate3_periodic(std::vector<Vertex<3>> vertices,bool weighted,
+                                       const Point<3>& period,bool collect_alpha) {
+    const auto native=acquire_periodic3<false>(std::move(vertices),weighted,period);
+    Complex<3> out(collect_alpha);
+    out.reserve(native.vertices.size(),native.cells.size());
+    for(const auto& cell:native.cells) {
+        auto simplex=native.simplex(cell.first);
+        const auto offsets=native.offsets(cell.first);
+        for(std::size_t i=0;i<4;++i) simplex[i].offset=offsets[i];
+        add_tetrahedron(out,simplex);
+    }
+    return out;
 }

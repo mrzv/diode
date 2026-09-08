@@ -15,13 +15,18 @@ use BPOW, with hidden sites omitted. BRIO-Hilbert reordering remains enabled.
 Weighted tetrahedral power centers are computed from the original linear
 equations rather than a Gram system.
 
-The unweighted periodic 3D alpha exporter uses Geogram's native periodic
-triangulation, including rectangular domains, instead of triangulating 27
-explicit copies of every point. Periodic copies are identified by original
-vertex IDs only after checking that their relative lattice offsets agree.
-Inputs unsupported by the native path retain the general implementation's
-handling. The attachment, 2D, weighted-periodic, and combinatorics exporters
-continue to use the general implementation.
+All periodic 3D exporters use Geogram's native periodic triangulation, including
+weighted alpha shapes, Delaunay simplices, lattice offsets, and rectangular
+domains. No explicit 27-copy triangulation is constructed by DioDe. Periodic
+copies are identified by original vertex IDs only after checking that their
+relative lattice offsets agree and that the resulting covering is closed.
+Hidden weighted sites are omitted. The bundled Geogram build includes a
+correction allowing periodic insertion to continue past hidden weighted sites;
+common weight offsets are removed before triangulation to preserve precision.
+Inputs that cannot be represented as a simplicial one-sheeted covering raise
+an error. Periodic 2D still uses explicit tiling because Geogram 1.9.9 has no
+native periodic 2D backend. Ordinary attachment exporters retain the general
+implementation; periodic attachments remain unsupported.
 
 These paths are shared by the list and NumPy-array alpha exporters; the
 list exporter still sorts the filtration, while arrays remain unsorted.

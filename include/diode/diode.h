@@ -72,16 +72,16 @@ struct AlphaShapes
     static void fill_weighted_delaunay(const Points& points, const SimplexCallback& add_simplex);
 
     // Combinatorics-only export (3D, weighted, periodic): like
-    // fill_weighted_delaunay, using a 3x3x3 tiled regular triangulation over
-    // [from, to]. Each canonical simplex is emitted once. Repeated real vertices
-    // within a tiled cell are omitted. No alpha values.
+    // fill_weighted_delaunay, using Geogram's native periodic regular
+    // triangulation over [from, to]. Each canonical simplex is emitted once.
+    // Hidden sites are omitted; non-one-sheeted coverings raise an error.
     // Callback: add_simplex(vertices).
     template<class Points, class SimplexCallback>
     static void fill_weighted_periodic_delaunay(const Points& points, const SimplexCallback& add_simplex,
                                     std::array<double, 3> from, std::array<double, 3> to);
 
     // Combinatorics-only export (3D, unweighted, periodic): like fill_delaunay,
-    // using a 3x3x3 tiled Delaunay triangulation over the cuboid [from, to].
+    // using Geogram's native periodic Delaunay triangulation over [from, to].
     // Each canonical simplex is emitted once, matching the periodic alpha paths.
     // No alpha values. Callback: add_simplex(vertices).
     template<class Points, class SimplexCallback>

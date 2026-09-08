@@ -289,10 +289,9 @@ def test_weighted_periodic_3d_fast_vs_slow_values(n, exact):
     assert diffs.max(initial=0.0) < 1e-2
 
 
-# The direct path always emits a valid filtered simplicial complex -- face-closed,
-# values non-decreasing onto cofaces, no duplicate/garbage indices -- even for
-# sparse clouds near the 1-sheet boundary where the slow Alpha_shape_3 path itself
-# degenerates (emits out-of-order / garbage-indexed simplices).
+# The periodic weighted output must be a closed triangulated 3-torus, not merely
+# a face-closed complex: missing or ghost cells can preserve local filtration
+# order while corrupting topology.
 @pytest.mark.parametrize("n", [200, 800, 1500])
 @pytest.mark.parametrize("exact", EXACTS)
 def test_weighted_periodic_3d_is_valid_complex(n, exact):
@@ -312,7 +311,14 @@ def test_weighted_periodic_3d_is_valid_complex(n, exact):
                 fa = val.get(tuple(face))
                 assert fa is not None, f"missing face {face} of {verts}"
                 assert fa <= a + 1e-9, f"face {face} value {fa} > coface {verts} value {a}"
-    # Sparse periodic complexes can omit vertices not present in a top cell.
+    counts = [sum(len(simplex) == d + 1 for simplex in val) for d in range(4)]
+    assert sum((-1) ** d * count for d, count in enumerate(counts)) == 0
+    triangle_incidence = {simplex: 0 for simplex in val if len(simplex) == 3}
+    for simplex in val:
+        if len(simplex) == 4:
+            for face in combinations(simplex, 3):
+                triangle_incidence[face] += 1
+    assert all(count == 2 for count in triangle_incidence.values())
 
 
 # ---- periodic 2D: tiled Geogram triangulation ------------------------------
@@ -390,7 +396,7 @@ def _gudhi_diagram(filtration, dim, gudhi):
     return d[np.isfinite(d).all(axis=1)] if d.size else d   # finite bars only
 
 
-# ---- periodic 3D: tiled Geogram triangulation ------------------------------
+# ---- periodic 3D -----------------------------------------------------------
 # Both public compatibility paths use the same offset-aware implementation.
 @pytest.mark.parametrize("n", [200, 800, 2000])
 @pytest.mark.parametrize("exact", EXACTS)

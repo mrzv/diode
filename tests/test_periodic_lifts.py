@@ -89,6 +89,43 @@ def test_periodic_boundary_edge_has_short_lift_alpha(dim, exact):
     assert values[(0, 1)] == pytest.approx(0.0001, rel=1e-10, abs=1e-15)
 
 
+@pytest.mark.parametrize("exact", [False, True])
+def test_rectangular_translated_lifts_match_empty_spheres_and_alpha(exact):
+    width = np.array([1.0, 1.25, 1.5])
+    origin = np.array([-3.0, 5.0, 2.0])
+    points = origin + periodic_cloud(3) * width
+    vertices, offsets = diode.fill_periodic_delaunay_lifts_arrays(
+        points, exact=exact, bbox_min=origin, bbox_max=origin + width
+    )
+    alpha = {
+        tuple(sorted(int(v) for v in simplex)): value
+        for simplex, value in diode.fill_periodic_alpha_shapes(
+            points, exact, origin.tolist(), (origin + width).tolist()
+        )
+    }
+    assert simplex_set(vertices) == alpha.keys()
+    assert set(vertices[0][:, 0]) == set(range(len(points)))
+
+    # Recover each sphere from the exported physical geometry, independently
+    # of the alpha computation. Tetrahedron alpha is its squared circumradius.
+    lifted = points[vertices[3]] + offsets[3] * width
+    edges = lifted[:, 1:] - lifted[:, :1]
+    squared_lengths = np.sum(edges * edges, axis=2)
+    relative_centers = np.linalg.solve(2 * edges, squared_lengths[..., None])[..., 0]
+    radii_squared = np.sum(relative_centers * relative_centers, axis=1)
+    np.testing.assert_allclose(
+        [alpha[tuple(row)] for row in vertices[3]], radii_squared,
+        rtol=1e-7, atol=1e-10,
+    )
+
+    # Wrong lattice signs, axis extents, or origin handling can give internally
+    # consistent alpha/lifts but fail the physical periodic empty-ball property.
+    centers = lifted[:, 0] + relative_centers
+    displacement = (centers[:, None] - points + width / 2) % width - width / 2
+    distances_squared = np.sum(displacement * displacement, axis=2)
+    assert np.all(distances_squared >= radii_squared[:, None] - 1e-9)
+
+
 @pytest.mark.parametrize(
     "points,bbox_min,bbox_max,match",
     [
@@ -105,6 +142,3 @@ def test_periodic_delaunay_lifts_validate_input(points, bbox_min, bbox_max, matc
             points, bbox_min=bbox_min, bbox_max=bbox_max
         )
 
-
-def test_periodic_delaunay_lifts_function_exists():
-    assert hasattr(diode, "fill_periodic_delaunay_lifts_arrays")

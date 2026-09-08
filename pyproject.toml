@@ -36,6 +36,7 @@ Issues = "https://github.com/mrzv/diode/issues"
 cache-keys = [{ file = "pyproject.toml" },
               { file = "bindings/**" },
               { file = "include/**" },
+              { file = "cmake/**" },
               { file = "CMakeLists.txt" }]
 
 [dependency-groups]

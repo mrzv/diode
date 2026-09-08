@@ -17,6 +17,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <type_traits>
 #include <vector>
 
 namespace diode {
@@ -810,10 +811,13 @@ Complex<2> triangulate2(
     return out;
 }
 
+#include "compact_alpha3.hpp"
+#include "compact_periodic3.hpp"
+
 
 inline Complex<3> triangulate3_regular(
     const std::vector<Vertex<3>>& vertices,bool weighted,
-    const Point<3>* periodic_extent=nullptr,bool collect_alpha=true
+    bool collect_alpha=true
 ) {
     std::lock_guard<std::mutex> lock(geogram_triangulation_mutex());
     GEO::Numeric::random_reset();
@@ -834,10 +838,7 @@ inline Complex<3> triangulate3_regular(
         : static_cast<GEO::Delaunay*>(new GEO::Delaunay3d());
     dt->set_reorder(true);
     dt->set_vertices(vertices.size(),coordinates.data());
-    const std::size_t tile_count=periodic_extent ? 27 : 1;
-    const std::size_t expected_cells=
-        static_cast<std::size_t>(dt->nb_cells())/tile_count+8;
-    out.reserve(vertices.size()/tile_count,expected_cells);
+    out.reserve(vertices.size(),static_cast<std::size_t>(dt->nb_cells())+8);
     for(GEO::index_t c=0;c<dt->nb_cells();++c) {
         std::array<Vertex<3>,4> cell;
         bool repeated=false;
@@ -846,44 +847,11 @@ inline Complex<3> triangulate3_regular(
             for(int j=0;j<i;++j) if(cell[j].id==cell[i].id) repeated=true;
         }
         if(repeated) continue;
-        if(periodic_extent) {
-            std::array<Point<3>,4> p{};
-            std::array<double,4> w{};
-            Point<3> center{};
-            for(int i=0;i<4;++i) { p[i]=cell[i].point; w[i]=cell[i].weight; }
-            sphere(p,w,&center);
-            bool central=true;
-            for(int d=0;d<3;++d) {
-                const double tolerance=1024.0*std::numeric_limits<double>::epsilon()*
-                    (*periodic_extent)[d];
-                central=central && center[d]>=-tolerance &&
-                    center[d]<=(*periodic_extent)[d]+tolerance;
-            }
-            if(!central) continue;
-        }
         add_tetrahedron(out,cell);
     }
     return out;
 }
 
-inline Complex<3> triangulate3_tiled(
-    const std::vector<Vertex<3>>& base,bool weighted,const Point<3>& period,
-    bool collect_alpha=true
-) {
-    std::vector<Vertex<3>> vertices;
-    vertices.reserve(base.size()*27);
-    for(int ox=-1;ox<=1;++ox)
-        for(int oy=-1;oy<=1;++oy)
-            for(int oz=-1;oz<=1;++oz)
-                for(auto vertex:base) {
-                    vertex.offset={ox,oy,oz};
-                    vertex.point[0]+=ox*period[0];
-                    vertex.point[1]+=oy*period[1];
-                    vertex.point[2]+=oz*period[2];
-                    vertices.push_back(vertex);
-                }
-    return triangulate3_regular(vertices,weighted,&period,collect_alpha);
-}
 
 template<class Points>
 Complex<3> triangulate3(
@@ -901,13 +869,12 @@ Complex<3> triangulate3(
                 std::move(vertices),weighted,collect_alpha
             )
             : Complex<3>(collect_alpha);
-    if(vertices.size()<4) return Complex<3>(collect_alpha);
-    if(!periodic)
-        return triangulate3_regular(
-            vertices,weighted,nullptr,collect_alpha
+    if(periodic)
+        return triangulate3_periodic(
+            std::move(vertices),weighted,periodic3_extent(from,to),collect_alpha
         );
-    Point<3> period{to[0]-from[0],to[1]-from[1],to[2]-from[2]};
-    return triangulate3_tiled(vertices,weighted,period,collect_alpha);
+    if(vertices.size()<4) return Complex<3>(collect_alpha);
+    return triangulate3_regular(vertices,weighted,collect_alpha);
 }
 
 template<std::size_t N,std::size_t D>
@@ -1009,8 +976,6 @@ template<class CB> void emit_periodic_lifts(const Complex<3>& x,const CB& cb) {
     emit_lifts(x.v,cb); emit_lifts(x.e,cb); emit_lifts(x.f,cb); emit_lifts(x.c,cb);
 }
 
-#include "compact_alpha3.hpp"
-#include "compact_periodic3.hpp"
 
 } // namespace detail
 
@@ -1036,23 +1001,22 @@ template<bool exact> template<class Points,class SimplexCallback>
 void AlphaShapes<exact>::fill_periodic_alpha_shapes(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { fill_periodic_alpha_shapes_direct(p,cb,a,b); }
 template<bool exact> template<class Points,class SimplexCallback>
 void AlphaShapes<exact>::fill_periodic_alpha_shapes_direct(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) {
-    if(detail::try_compact_periodic3(p,cb,a,b)) return;
-    auto x=detail::triangulate3(p,false,true,a,b); detail::emit_alpha(x,cb);
+    detail::fill_compact_periodic3_alpha(p,cb,false,a,b);
 }
 template<bool exact> template<class Points,class SimplexCallback>
 void AlphaShapes<exact>::fill_delaunay(const Points& p,const SimplexCallback& cb) { auto x=detail::triangulate3(p,false,false,{0,0,0},{1,1,1},true,false); detail::emit_delaunay(x,cb); }
 template<bool exact> template<class Points,class SimplexCallback>
 void AlphaShapes<exact>::fill_weighted_delaunay(const Points& p,const SimplexCallback& cb) { auto x=detail::triangulate3(p,true,false,{0,0,0},{1,1,1},true,false); detail::emit_delaunay(x,cb); }
 template<bool exact> template<class Points,class SimplexCallback>
-void AlphaShapes<exact>::fill_periodic_delaunay(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { auto x=detail::triangulate3(p,false,true,a,b,false,false); detail::emit_delaunay(x,cb); }
+void AlphaShapes<exact>::fill_periodic_delaunay(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { detail::fill_compact_periodic3_delaunay<false>(p,cb,false,a,b); }
 template<bool exact> template<class Points,class SimplexCallback>
-void AlphaShapes<exact>::fill_periodic_delaunay_lifts(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { auto x=detail::triangulate3(p,false,true,a,b,false,false); detail::emit_periodic_lifts(x,cb); }
+void AlphaShapes<exact>::fill_periodic_delaunay_lifts(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { detail::fill_compact_periodic3_delaunay<true>(p,cb,false,a,b); }
 template<bool exact> template<class Points,class SimplexCallback>
 void AlphaShapes<exact>::fill_weighted_periodic_alpha_shapes(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { fill_weighted_periodic_alpha_shapes_direct(p,cb,a,b); }
 template<bool exact> template<class Points,class SimplexCallback>
-void AlphaShapes<exact>::fill_weighted_periodic_alpha_shapes_direct(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { auto x=detail::triangulate3(p,true,true,a,b); detail::emit_alpha(x,cb); }
+void AlphaShapes<exact>::fill_weighted_periodic_alpha_shapes_direct(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { detail::fill_compact_periodic3_alpha(p,cb,true,a,b); }
 template<bool exact> template<class Points,class SimplexCallback>
-void AlphaShapes<exact>::fill_weighted_periodic_delaunay(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { auto x=detail::triangulate3(p,true,true,a,b,false,false); detail::emit_delaunay(x,cb); }
+void AlphaShapes<exact>::fill_weighted_periodic_delaunay(const Points& p,const SimplexCallback& cb,std::array<double,3> a,std::array<double,3> b) { detail::fill_compact_periodic3_delaunay<false>(p,cb,true,a,b); }
 
 template<bool exact> template<class Points>
 std::array<typename Points::Real,3> AlphaShapes<exact>::circumcenter(const Points& p) {
