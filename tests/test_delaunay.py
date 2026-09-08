@@ -186,18 +186,16 @@ def test_weighted_coplanar_delaunay_hides_redundant_site():
 
 
 # ---- periodic: combinatorics vs the periodic alpha path ---------------------
-# The periodic triangulation must be representable in 1 sheet; the alpha path
-# raises "Cannot convert to 1-sheeted covering" otherwise (too few points for the
-# domain). 3D needs noticeably more points than 2D. Both paths share this guard,
-# so we compare only when the alpha path succeeds.
-PERIODIC_SIZES = {2: [20, 100, 500], 3: [200, 800]}
+# The periodic triangulation must be representable in one sheet. Both paths
+# share this guard, so compare only when the alpha path succeeds.
+PERIODIC_SIZES = [200, 800]
 
 
-@pytest.mark.parametrize("dim", DIMS)
 @pytest.mark.parametrize("exact", EXACTS)
-def test_periodic_delaunay_matches_alpha_simplex_set(dim, exact):
+def test_periodic_delaunay_matches_alpha_simplex_set(exact):
+    dim = 3
     frm, to = [0.0] * dim, [1.0] * dim
-    for n in PERIODIC_SIZES[dim]:
+    for n in PERIODIC_SIZES:
         rng = np.random.default_rng(6000 * n + 10 * dim + int(exact))
         pts = rng.random((n, dim))
         try:
@@ -227,11 +225,6 @@ def test_periodic_delaunay_matches_alpha_simplex_set(dim, exact):
         counts = [int(np.asarray(a).shape[0]) for a in dl_arr]
         euler = sum((-1) ** d * c for d, c in enumerate(counts))
         assert euler == 0, f"periodic Euler characteristic {euler} != 0 (d-torus) at dim={dim} n={n}"
-
-
-def test_periodic_delaunay_functions_exist():
-    assert hasattr(diode, "fill_periodic_delaunay")
-    assert hasattr(diode, "fill_periodic_delaunay_arrays")
 
 
 # ---- weighted combinatorics (regular triangulation) vs the weighted alpha set ---

@@ -763,23 +763,13 @@ inline Complex<2> lower_dimensional_complex(
 
 template<class Points>
 Complex<2> triangulate2(
-    const Points& points,bool periodic=false,Point<2> from={0,0},
-    Point<2> to={1,1},bool collect_alpha=true
+    const Points& points,bool collect_alpha=true
 ) {
     initialize_geogram();
-    auto base=unique_points<Points,2>(points,false,periodic?&from:nullptr);
-    std::vector<Vertex<2>> vertices;
-    if(periodic) {
-        vertices.reserve(base.size()*9);
-        for(int ox=-1;ox<=1;++ox) for(int oy=-1;oy<=1;++oy) for(auto v:base) {
-            v.offset={ox,oy}; v.point[0]+=ox*(to[0]-from[0]); v.point[1]+=oy*(to[1]-from[1]); vertices.push_back(v);
-        }
-    } else vertices=base;
+    auto vertices=unique_points<Points,2>(points,false);
     Complex<2> out(collect_alpha);
-    if(base.size()<3)
-        return periodic
-            ? std::move(out)
-            : lower_dimensional_complex(std::move(base),collect_alpha);
+    if(vertices.size()<3)
+        return lower_dimensional_complex(std::move(vertices),collect_alpha);
     std::vector<double> coords; coords.reserve(vertices.size()*2);
     for(const auto& v:vertices) { coords.push_back(v.point[0]); coords.push_back(v.point[1]); }
     std::lock_guard<std::mutex> lock(geogram_triangulation_mutex());
@@ -787,27 +777,14 @@ Complex<2> triangulate2(
     GEO::SmartPointer<GEO::Delaunay2d> dt=new GEO::Delaunay2d();
     dt->set_reorder(true);
     dt->set_vertices(vertices.size(),coords.data());
-    const std::size_t expected_cells=periodic
-        ? static_cast<std::size_t>(dt->nb_cells())/9+8
-        : static_cast<std::size_t>(dt->nb_cells());
-    out.reserve(base.size(),expected_cells);
+    out.reserve(vertices.size(),static_cast<std::size_t>(dt->nb_cells()));
     for(GEO::index_t c=0;c<dt->nb_cells();++c) {
         std::array<Vertex<2>,3> cell;
         for(int i=0;i<3;++i) cell[i]=vertices[dt->cell_vertex(c,i)];
-        if(periodic) {
-            std::array<Point<2>,3> p{cell[0].point,cell[1].point,cell[2].point};
-            std::array<double,3> w{}; Point<2> center{}; sphere(p,w,&center);
-            const double tolerance_x=1024.0*std::numeric_limits<double>::epsilon()*
-                (to[0]-from[0]);
-            const double tolerance_y=1024.0*std::numeric_limits<double>::epsilon()*
-                (to[1]-from[1]);
-            if(center[0]<-tolerance_x || center[0]>to[0]-from[0]+tolerance_x ||
-               center[1]<-tolerance_y || center[1]>to[1]-from[1]+tolerance_y) continue;
-        }
         add_triangle(out,cell);
     }
-    if(!periodic && out.f.empty())
-        return lower_dimensional_complex(std::move(base),collect_alpha);
+    if(out.f.empty())
+        return lower_dimensional_complex(std::move(vertices),collect_alpha);
     return out;
 }
 
@@ -930,23 +907,6 @@ void emit_combinatorics(
     for(const auto& item:records) callback(item.first.vertices);
 }
 
-template<std::size_t N,std::size_t D,class Callback>
-void emit_lifts(const RecordMap<N,D>& records,const Callback& callback) {
-    using Offsets=std::array<std::array<int,D>,N>;
-    std::unordered_map<std::array<unsigned,N>,Offsets,VertexKeyHash<N>> seen;
-    seen.reserve(records.size());
-    for(const auto& item:records) {
-        auto [iterator,inserted]=seen.emplace(
-            item.first.vertices,item.first.offsets
-        );
-        if(!inserted && iterator->second!=item.first.offsets)
-            throw std::runtime_error(
-                "Cannot convert periodic triangulation to a one-sheeted covering"
-            );
-    }
-    for(const auto& item:seen) callback(item.first,item.second);
-}
-
 template<class C, class CB> void emit_alpha(C& x,const CB& cb) {
     compute_alpha(x);
     emit_values_plain(x.v,cb); emit_values_plain(x.e,cb); emit_values_plain(x.f,cb);
@@ -968,12 +928,6 @@ template<class C, class CB> void emit_delaunay(const C& x,const CB& cb) {
 }
 template<class CB> void emit_delaunay(const Complex<3>& x,const CB& cb) {
     emit_combinatorics(x.v,cb); emit_combinatorics(x.e,cb); emit_combinatorics(x.f,cb); emit_combinatorics(x.c,cb);
-}
-template<class C, class CB> void emit_periodic_lifts(const C& x,const CB& cb) {
-    emit_lifts(x.v,cb); emit_lifts(x.e,cb); emit_lifts(x.f,cb);
-}
-template<class CB> void emit_periodic_lifts(const Complex<3>& x,const CB& cb) {
-    emit_lifts(x.v,cb); emit_lifts(x.e,cb); emit_lifts(x.f,cb); emit_lifts(x.c,cb);
 }
 
 
@@ -1040,14 +994,6 @@ void fill_alpha_shapes2d_with_attachment(const Points& p,const SimplexCallback& 
 template<bool exact,class Points,class SimplexCallback>
 void fill_alpha_shapes2d_direct_with_attachment(const Points& p,const SimplexCallback& cb) { auto x=detail::triangulate2(p); detail::emit_attachment(x,cb); }
 template<bool exact,class Points,class SimplexCallback>
-void fill_periodic_alpha_shapes2d(const Points& p,const SimplexCallback& cb,std::array<double,2> a,std::array<double,2> b) { fill_periodic_alpha_shapes2d_direct<exact>(p,cb,a,b); }
-template<bool exact,class Points,class SimplexCallback>
-void fill_periodic_alpha_shapes2d_direct(const Points& p,const SimplexCallback& cb,std::array<double,2> a,std::array<double,2> b) { auto x=detail::triangulate2(p,true,a,b); detail::emit_alpha(x,cb); }
-template<bool exact,class Points,class SimplexCallback>
-void fill_delaunay2d(const Points& p,const SimplexCallback& cb) { auto x=detail::triangulate2(p,false,{0,0},{1,1},false); detail::emit_delaunay(x,cb); }
-template<bool exact,class Points,class SimplexCallback>
-void fill_periodic_delaunay2d(const Points& p,const SimplexCallback& cb,std::array<double,2> a,std::array<double,2> b) { auto x=detail::triangulate2(p,true,a,b,false); detail::emit_delaunay(x,cb); }
-template<bool exact,class Points,class SimplexCallback>
-void fill_periodic_delaunay2d_lifts(const Points& p,const SimplexCallback& cb,std::array<double,2> a,std::array<double,2> b) { auto x=detail::triangulate2(p,true,a,b,false); detail::emit_periodic_lifts(x,cb); }
+void fill_delaunay2d(const Points& p,const SimplexCallback& cb) { auto x=detail::triangulate2(p,false); detail::emit_delaunay(x,cb); }
 
 } // namespace diode

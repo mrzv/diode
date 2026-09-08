@@ -116,12 +116,6 @@ def test_fast_matches_slow_with_attachment(dim, n, exact):
     check_attacher(slow, pts, rtol=1e-5)
 
 
-def test_slow_function_exists():
-    assert hasattr(diode, "fill_alpha_shapes_slow")
-    assert hasattr(diode, "fill_periodic_alpha_shapes_slow")
-    assert hasattr(diode, "fill_weighted_alpha_shapes_slow")
-
-
 # ---- regression: degenerate (lower-dimensional) inputs must not crash and must
 # match the _slow reference (previously the fast paths segfaulted) --------------
 DEGENERATE_2D = [
@@ -184,25 +178,20 @@ def test_duplicate_coords_match_slow_vertex_ids():
 def test_periodic_from_to_length_validated():
     rng = np.random.default_rng(0)
     with pytest.raises(RuntimeError):
-        diode.fill_periodic_delaunay(rng.random((20, 2)), False, [0.0], [1.0])
+        diode.fill_periodic_delaunay(rng.random((20, 3)), False, [0.0], [1.0])
     with pytest.raises(RuntimeError):
         diode.fill_periodic_alpha_shapes(rng.random((20, 3)), False, [0., 0.], [1., 1.])
     with pytest.raises(RuntimeError):
         diode.fill_weighted_periodic_delaunay(rng.random((20, 4)), False, [0., 0.], [1., 1.])
-    # the length-3 default is accepted for 2D points (only the first 2 are used)
-    diode.fill_periodic_alpha_shapes(rng.random((50, 2)))
 
 
 def test_periodic_inverted_domain_raises():
     # Invalid periodic boxes must raise instead of reaching the backend.
     rng = np.random.default_rng(0)
     p3 = rng.random((50, 3))
-    p2 = rng.random((50, 2))
     w = np.hstack([rng.random((50, 3)), rng.random((50, 1)) * 0.01])
     with pytest.raises(RuntimeError):
         diode.fill_periodic_alpha_shapes(p3, False, [1., 1., 1.], [0., 0., 0.])   # inverted 3D
-    with pytest.raises(RuntimeError):
-        diode.fill_periodic_alpha_shapes(p2, False, [1., 1.], [0., 0.])           # inverted 2D
     with pytest.raises(RuntimeError):
         diode.fill_periodic_delaunay(p3, False, [0., 0., 0.], [0., 1., 1.])       # zero extent on x
     with pytest.raises(RuntimeError):
@@ -321,81 +310,6 @@ def test_weighted_periodic_3d_is_valid_complex(n, exact):
     assert all(count == 2 for count in triangle_incidence.values())
 
 
-# ---- periodic 2D: tiled Geogram triangulation ------------------------------
-# The backend triangulates a 3x3 tiling, retaining cells whose circumcenter is
-# in the central domain.
-@pytest.mark.parametrize("n", [20, 100, 500, 1500])
-@pytest.mark.parametrize("exact", EXACTS)
-def test_periodic_2d_fast_vs_slow_values(n, exact):
-    rng = np.random.default_rng(5000 * n + int(exact))
-    pts = rng.random((n, 2))
-    fast = to_value_dict(diode.fill_periodic_alpha_shapes(pts, exact, [0., 0.], [1., 1.]))
-    slow = to_value_dict(diode.fill_periodic_alpha_shapes_slow(pts, exact, [0., 0.], [1., 1.]))
-    assert set(fast) == set(slow), "periodic simplex sets differ"
-    diffs = np.array([abs(fast[k] - slow[k]) for k in fast])
-    assert diffs.max(initial=0.0) < 1e-7, \
-        f"fast/slow 2D periodic values differ by {diffs.max(initial=0.0):.2e}"
-
-
-def _periodic_2d_tiling_edge_values(pts, gudhi, half=2, L=1.0):
-    """Ground-truth periodic 2D alpha EDGE values: the periodic alpha complex equals
-    the ordinary alpha complex of an infinite tiling, so we tile into (2*half+1)^2
-    copies, run a non-periodic EXACT alpha, and keep edges anchored at a central-cell
-    vertex -- those sit deep inside the tiling, so their Edelsbrunner values are the
-    true periodic ones. Returns {sorted (a, b): squared circumradius}."""
-    n = len(pts)
-    P, canon, central = [], [], []
-    for dy in range(-half, half + 1):
-        for dx in range(-half, half + 1):
-            for k in range(n):
-                P.append((pts[k, 0] + dx * L, pts[k, 1] + dy * L))
-                canon.append(k)
-                central.append(dx == 0 and dy == 0)
-    st = gudhi.AlphaComplex(points=P, precision="exact").create_simplex_tree()
-    edge = {}
-    for s, val in st.get_simplices():
-        if len(s) != 2:
-            continue
-        u, v = s
-        if not (central[u] or central[v]):
-            continue
-        a, b = canon[u], canon[v]
-        if a == b:
-            continue
-        key = (min(a, b), max(a, b))
-        edge[key] = min(edge.get(key, float("inf")), float(val))
-    return edge
-
-
-@pytest.mark.parametrize("n", [50, 200])
-@pytest.mark.parametrize("exact", EXACTS)
-def test_periodic_2d_matches_tiling(n, exact):
-    # The strong correctness pin: the direct path's 2D periodic edge values must equal
-    # the brute-force tiling ground truth. The frame-mixed Gabriel test this replaced
-    # was wrong on a handful of boundary-wrapping edges per cloud and would fail here.
-    gudhi = pytest.importorskip("gudhi")
-    rng = np.random.default_rng(5000 * n + int(exact))
-    pts = rng.random((n, 2))
-    fast = to_value_dict(diode.fill_periodic_alpha_shapes(pts, exact, [0., 0.], [1., 1.]))
-    truth = _periodic_2d_tiling_edge_values(pts, gudhi)
-    checked = [k for k in fast if len(k) == 2 and k in truth]
-    assert len(checked) > n, f"tiling resolved too few edges ({len(checked)})"
-    bad = [(k, fast[k], truth[k]) for k in checked
-           if not np.isclose(fast[k], truth[k], rtol=1e-6, atol=1e-9)]
-    assert not bad, f"{len(bad)} edge(s) differ from the tiling truth, e.g. {bad[:3]}"
-
-
-def _gudhi_diagram(filtration, dim, gudhi):
-    """Persistence diagram (per dimension) of an arbitrary (verts, value) filtration."""
-    st = gudhi.SimplexTree()
-    for verts, val in filtration:
-        st.insert([int(v) for v in verts], float(val))
-    st.make_filtration_non_decreasing()
-    st.compute_persistence(persistence_dim_max=True)
-    d = np.asarray(st.persistence_intervals_in_dimension(dim), dtype=float)
-    return d[np.isfinite(d).all(axis=1)] if d.size else d   # finite bars only
-
-
 # ---- periodic 3D -----------------------------------------------------------
 # Both public compatibility paths use the same offset-aware implementation.
 @pytest.mark.parametrize("n", [200, 800, 2000])
@@ -415,19 +329,3 @@ def test_periodic_3d_fast_vs_slow_values(n, exact):
     # Compatibility entry points agree to round-off.
     assert diffs.max(initial=0.0) < 1e-7, \
         f"periodic 3D value difference too large: {diffs.max(initial=0.0):.2e}"
-
-
-@pytest.mark.parametrize("n", [100, 500, 1500])
-def test_periodic_2d_fast_vs_slow_diagram(n):
-    # Optional, stronger check: persistence diagrams agree under bottleneck
-    # distance. Skipped if no PD library is installed (diode itself does not
-    # depend on one).
-    gudhi = pytest.importorskip("gudhi")
-    rng = np.random.default_rng(9000 + n)
-    pts = rng.random((n, 2))
-    fast = diode.fill_periodic_alpha_shapes(pts, False, [0., 0.], [1., 1.])
-    slow = diode.fill_periodic_alpha_shapes_slow(pts, False, [0., 0.], [1., 1.])
-    for d in (0, 1):
-        bd = gudhi.bottleneck_distance(_gudhi_diagram(fast, d, gudhi),
-                                       _gudhi_diagram(slow, d, gudhi))
-        assert bd < 1e-2, f"periodic dim-{d} bottleneck distance {bd} too large"

@@ -283,7 +283,7 @@ fill_weighted_alpha_shapes_arrays(py::array a, bool exact)
     return pack_simplex_arrays(verts, vals);
 }
 
-// unweighted periodic (2D or 3D) value-carrying traversal: mirrors
+// unweighted periodic 3D value-carrying traversal: mirrors
 // run_periodic_delaunay_traversal but calls the periodic alpha direct functions.
 template<class Cb>
 void run_periodic_alpha_direct_traversal(py::array a, bool exact,
@@ -292,34 +292,27 @@ void run_periodic_alpha_direct_traversal(py::array a, bool exact,
     if (a.ndim() != 2)
         throw std::runtime_error("Unknown input dimension: can only process 2D arrays");
     auto cols = a.shape()[1];
-    if (cols != 2 && cols != 3)
-        throw std::runtime_error("Can only handle 2D or 3D alpha shapes");
+    if (cols == 2)
+    {
+        PyErr_SetString(PyExc_NotImplementedError,
+                        "2D periodic triangulations are not supported by Geogram");
+        throw py::error_already_set();
+    }
+    if (cols != 3)
+        throw std::runtime_error("Can only handle 3D periodic alpha shapes");
     check_periodic_domain(from_, to_, static_cast<std::size_t>(cols));
     bool is_float  = a.dtype().is(py::dtype::of<float>());
     bool is_double = a.dtype().is(py::dtype::of<double>());
     if (!is_float && !is_double)
         throw std::runtime_error("Unknown array dtype");
 
-    if (cols == 3)
-    {
-        std::array<double,3> from { from_[0], from_[1], from_[2] }, to { to_[0], to_[1], to_[2] };
-        auto run = [&](auto etag) {
-            constexpr bool E = decltype(etag)::value;
-            if (is_float) diode::AlphaShapes<E>::fill_periodic_alpha_shapes_direct(ArrayWrapper<float >(a), cb, from, to);
-            else          diode::AlphaShapes<E>::fill_periodic_alpha_shapes_direct(ArrayWrapper<double>(a), cb, from, to);
-        };
-        if (exact) run(std::true_type{}); else run(std::false_type{});
-    }
-    else
-    {
-        std::array<double,2> from { from_[0], from_[1] }, to { to_[0], to_[1] };
-        auto run = [&](auto etag) {
-            constexpr bool E = decltype(etag)::value;
-            if (is_float) diode::fill_periodic_alpha_shapes2d_direct<E>(ArrayWrapper<float >(a), cb, from, to);
-            else          diode::fill_periodic_alpha_shapes2d_direct<E>(ArrayWrapper<double>(a), cb, from, to);
-        };
-        if (exact) run(std::true_type{}); else run(std::false_type{});
-    }
+    std::array<double,3> from { from_[0], from_[1], from_[2] }, to { to_[0], to_[1], to_[2] };
+    auto run = [&](auto etag) {
+        constexpr bool E = decltype(etag)::value;
+        if (is_float) diode::AlphaShapes<E>::fill_periodic_alpha_shapes_direct(ArrayWrapper<float >(a), cb, from, to);
+        else          diode::AlphaShapes<E>::fill_periodic_alpha_shapes_direct(ArrayWrapper<double>(a), cb, from, to);
+    };
+    if (exact) run(std::true_type{}); else run(std::false_type{});
 }
 
 py::object
@@ -452,7 +445,7 @@ fill_delaunay(py::array a, bool exact)
     return py::cast(f);
 }
 
-// run the periodic combinatorics-only Delaunay traversal (2D or 3D), feeding each
+// run the periodic combinatorics-only 3D Delaunay traversal, feeding each
 // simplex to cb(std::array<unsigned,D>) with no alpha value.
 template<class Cb>
 void run_periodic_delaunay_traversal(py::array a, bool exact,
@@ -461,34 +454,27 @@ void run_periodic_delaunay_traversal(py::array a, bool exact,
     if (a.ndim() != 2)
         throw std::runtime_error("Unknown input dimension: can only process 2D arrays");
     auto cols = a.shape()[1];
-    if (cols != 2 && cols != 3)
-        throw std::runtime_error("Can only handle 2D or 3D Delaunay triangulations");
+    if (cols == 2)
+    {
+        PyErr_SetString(PyExc_NotImplementedError,
+                        "2D periodic triangulations are not supported by Geogram");
+        throw py::error_already_set();
+    }
+    if (cols != 3)
+        throw std::runtime_error("Can only handle 3D periodic Delaunay triangulations");
     check_periodic_domain(from_, to_, static_cast<std::size_t>(cols));
     bool is_float  = a.dtype().is(py::dtype::of<float>());
     bool is_double = a.dtype().is(py::dtype::of<double>());
     if (!is_float && !is_double)
         throw std::runtime_error("Unknown array dtype");
 
-    if (cols == 3)
-    {
-        std::array<double,3> from { from_[0], from_[1], from_[2] }, to { to_[0], to_[1], to_[2] };
-        auto run = [&](auto etag) {
-            constexpr bool E = decltype(etag)::value;
-            if (is_float) diode::AlphaShapes<E>::fill_periodic_delaunay(ArrayWrapper<float >(a), cb, from, to);
-            else          diode::AlphaShapes<E>::fill_periodic_delaunay(ArrayWrapper<double>(a), cb, from, to);
-        };
-        if (exact) run(std::true_type{}); else run(std::false_type{});
-    }
-    else
-    {
-        std::array<double,2> from { from_[0], from_[1] }, to { to_[0], to_[1] };
-        auto run = [&](auto etag) {
-            constexpr bool E = decltype(etag)::value;
-            if (is_float) diode::fill_periodic_delaunay2d<E>(ArrayWrapper<float >(a), cb, from, to);
-            else          diode::fill_periodic_delaunay2d<E>(ArrayWrapper<double>(a), cb, from, to);
-        };
-        if (exact) run(std::true_type{}); else run(std::false_type{});
-    }
+    std::array<double,3> from { from_[0], from_[1], from_[2] }, to { to_[0], to_[1], to_[2] };
+    auto run = [&](auto etag) {
+        constexpr bool E = decltype(etag)::value;
+        if (is_float) diode::AlphaShapes<E>::fill_periodic_delaunay(ArrayWrapper<float >(a), cb, from, to);
+        else          diode::AlphaShapes<E>::fill_periodic_delaunay(ArrayWrapper<double>(a), cb, from, to);
+    };
+    if (exact) run(std::true_type{}); else run(std::false_type{});
 }
 
 // returns verts_by_dim (per-dim (n_d, d+1) int64 arrays) for the periodic Delaunay
@@ -537,12 +523,18 @@ void run_periodic_delaunay_lifts_traversal(py::array a, bool exact,
                                            std::vector<double> from_, std::vector<double> to_,
                                            const Cb& cb)
 {
-    // Validate and dispatch the 2D/3D periodic lift traversal by dtype and kernel.
+    // Validate and dispatch the 3D periodic lift traversal by dtype and kernel.
     if (a.ndim() != 2)
         throw std::runtime_error("Unknown input dimension: can only process 2D arrays");
     auto cols = a.shape()[1];
-    if (cols != 2 && cols != 3)
-        throw std::runtime_error("Can only handle 2D or 3D Delaunay triangulations");
+    if (cols == 2)
+    {
+        PyErr_SetString(PyExc_NotImplementedError,
+                        "2D periodic triangulations are not supported by Geogram");
+        throw py::error_already_set();
+    }
+    if (cols != 3)
+        throw std::runtime_error("Can only handle 3D periodic Delaunay triangulations");
     check_periodic_domain(from_, to_, static_cast<std::size_t>(cols));
     bool is_float = a.dtype().is(py::dtype::of<float>());
     bool is_double = a.dtype().is(py::dtype::of<double>());
@@ -553,35 +545,19 @@ void run_periodic_delaunay_lifts_traversal(py::array a, bool exact,
     else
         check_periodic_lift_points(ArrayWrapper<double>(a), from_, to_, static_cast<std::size_t>(cols));
 
-    if (cols == 3) {
-        std::array<double, 3> from { from_[0], from_[1], from_[2] };
-        std::array<double, 3> to { to_[0], to_[1], to_[2] };
-        auto run = [&](auto etag) {
-            constexpr bool E = decltype(etag)::value;
-            if (is_float)
-                diode::AlphaShapes<E>::fill_periodic_delaunay_lifts(ArrayWrapper<float>(a), cb, from, to);
-            else
-                diode::AlphaShapes<E>::fill_periodic_delaunay_lifts(ArrayWrapper<double>(a), cb, from, to);
-        };
-        if (exact)
-            run(std::true_type{});
+    std::array<double, 3> from { from_[0], from_[1], from_[2] };
+    std::array<double, 3> to { to_[0], to_[1], to_[2] };
+    auto run = [&](auto etag) {
+        constexpr bool E = decltype(etag)::value;
+        if (is_float)
+            diode::AlphaShapes<E>::fill_periodic_delaunay_lifts(ArrayWrapper<float>(a), cb, from, to);
         else
-            run(std::false_type{});
-    } else {
-        std::array<double, 2> from { from_[0], from_[1] };
-        std::array<double, 2> to { to_[0], to_[1] };
-        auto run = [&](auto etag) {
-            constexpr bool E = decltype(etag)::value;
-            if (is_float)
-                diode::fill_periodic_delaunay2d_lifts<E>(ArrayWrapper<float>(a), cb, from, to);
-            else
-                diode::fill_periodic_delaunay2d_lifts<E>(ArrayWrapper<double>(a), cb, from, to);
-        };
-        if (exact)
-            run(std::true_type{});
-        else
-            run(std::false_type{});
-    }
+            diode::AlphaShapes<E>::fill_periodic_delaunay_lifts(ArrayWrapper<double>(a), cb, from, to);
+    };
+    if (exact)
+        run(std::true_type{});
+    else
+        run(std::false_type{});
 }
 
 py::object
@@ -838,8 +814,14 @@ fill_periodic_alpha_shape_impl(py::array a, bool exact, std::vector<double> from
     if (a.ndim() != 2)
         throw std::runtime_error("Unknown input dimension: can only process 2D arrays");
     auto cols = a.shape()[1];
-    if (cols != 2 && cols != 3)
-        throw std::runtime_error("Can only handle 2D or 3D alpha shapes");
+    if (cols == 2)
+    {
+        PyErr_SetString(PyExc_NotImplementedError,
+                        "2D periodic triangulations are not supported by Geogram");
+        throw py::error_already_set();
+    }
+    if (cols != 3)
+        throw std::runtime_error("Can only handle 3D periodic alpha shapes");
     check_periodic_domain(from_, to_, static_cast<std::size_t>(cols));
     bool is_float  = a.dtype().is(py::dtype::of<float>());
     bool is_double = a.dtype().is(py::dtype::of<double>());
@@ -847,36 +829,18 @@ fill_periodic_alpha_shape_impl(py::array a, bool exact, std::vector<double> from
         throw std::runtime_error("Unknown array dtype");
 
     AddSimplex::Simplices f;
-    if (cols == 3)
-    {
-        std::array<double,3> from { from_[0], from_[1], from_[2] }, to { to_[0], to_[1], to_[2] };
-        auto run = [&](auto etag) {
-            constexpr bool E = decltype(etag)::value;
-            if constexpr (Slow) {
-                if (is_float) diode::AlphaShapes<E>::fill_periodic_alpha_shapes(ArrayWrapper<float >(a), AddSimplex(&f), from, to);
-                else          diode::AlphaShapes<E>::fill_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex(&f), from, to);
-            } else {
-                if (is_float) diode::AlphaShapes<E>::fill_periodic_alpha_shapes_direct(ArrayWrapper<float >(a), AddSimplex(&f), from, to);
-                else          diode::AlphaShapes<E>::fill_periodic_alpha_shapes_direct(ArrayWrapper<double>(a), AddSimplex(&f), from, to);
-            }
-        };
-        if (exact) run(std::true_type{}); else run(std::false_type{});
-    }
-    else
-    {
-        std::array<double,2> from { from_[0], from_[1] }, to { to_[0], to_[1] };
-        auto run = [&](auto etag) {
-            constexpr bool E = decltype(etag)::value;
-            if constexpr (Slow) {
-                if (is_float) diode::fill_periodic_alpha_shapes2d<E>(ArrayWrapper<float >(a), AddSimplex(&f), from, to);
-                else          diode::fill_periodic_alpha_shapes2d<E>(ArrayWrapper<double>(a), AddSimplex(&f), from, to);
-            } else {
-                if (is_float) diode::fill_periodic_alpha_shapes2d_direct<E>(ArrayWrapper<float >(a), AddSimplex(&f), from, to);
-                else          diode::fill_periodic_alpha_shapes2d_direct<E>(ArrayWrapper<double>(a), AddSimplex(&f), from, to);
-            }
-        };
-        if (exact) run(std::true_type{}); else run(std::false_type{});
-    }
+    std::array<double,3> from { from_[0], from_[1], from_[2] }, to { to_[0], to_[1], to_[2] };
+    auto run = [&](auto etag) {
+        constexpr bool E = decltype(etag)::value;
+        if constexpr (Slow) {
+            if (is_float) diode::AlphaShapes<E>::fill_periodic_alpha_shapes(ArrayWrapper<float >(a), AddSimplex(&f), from, to);
+            else          diode::AlphaShapes<E>::fill_periodic_alpha_shapes(ArrayWrapper<double>(a), AddSimplex(&f), from, to);
+        } else {
+            if (is_float) diode::AlphaShapes<E>::fill_periodic_alpha_shapes_direct(ArrayWrapper<float >(a), AddSimplex(&f), from, to);
+            else          diode::AlphaShapes<E>::fill_periodic_alpha_shapes_direct(ArrayWrapper<double>(a), AddSimplex(&f), from, to);
+        }
+    };
+    if (exact) run(std::true_type{}); else run(std::false_type{});
     sort_filtration(f);
     return py::cast(f);
 }
@@ -1021,26 +985,29 @@ PYBIND11_MODULE(diode, m)
           "data"_a, "exact"_a = false,
           "from"_a = std::vector<double> {0.,0.,0.},
           "to"_a   = std::vector<double> {1.,1.,1.},
-          "Periodic Delaunay simplices as per-dimension NumPy arrays WITHOUT alpha\n"
+          "Periodic 3D Delaunay simplices as per-dimension NumPy arrays WITHOUT alpha\n"
           "values (periodic counterpart of fill_delaunay_arrays). Each canonical\n"
-          "simplex is emitted once. verts_by_dim[d] is an (n_d, d+1) int64 array.");
+          "simplex is emitted once. verts_by_dim[d] is an (n_d, d+1) int64 array.\n"
+          "2D periodic input raises NotImplementedError; Geogram supports only 3D.");
     m.def("fill_periodic_delaunay", &fill_periodic_delaunay,
           "data"_a, "exact"_a = false,
           "from"_a = std::vector<double> {0.,0.,0.},
           "to"_a   = std::vector<double> {1.,1.,1.},
-          "Periodic Delaunay simplices as a flat list of vertex lists, WITHOUT alpha\n"
-          "values. List form of fill_periodic_delaunay_arrays.");
+          "Periodic 3D Delaunay simplices as a flat list of vertex lists, WITHOUT alpha\n"
+          "values. List form of fill_periodic_delaunay_arrays.\n"
+          "2D periodic input raises NotImplementedError; Geogram supports only 3D.");
     m.def("fill_periodic_delaunay_lifts_arrays", &fill_periodic_delaunay_lifts_arrays,
           "data"_a, "exact"_a = false,
           "bbox_min"_a = std::vector<double> {0.,0.,0.},
           "bbox_max"_a = std::vector<double> {1.,1.,1.},
-          "Periodic Delaunay simplices and coherent lattice offsets as aligned\n"
+          "Periodic 3D Delaunay simplices and coherent lattice offsets as aligned\n"
           "per-dimension NumPy arrays. Returns (verts_by_dim, offsets_by_dim),\n"
           "where verts_by_dim[d] has shape (n_d, d+1) and offsets_by_dim[d]\n"
           "has shape (n_d, d+1, ambient_dim). Vertex ids are sorted within each\n"
           "row and offsets are normalized so the first offset is zero. Points\n"
           "must lie in the half-open periodic domain. Repeated vertex-id rows\n"
-          "after conversion to a one-sheet covering raise an error.");
+          "after conversion to a one-sheet covering raise an error.\n"
+          "2D periodic input raises NotImplementedError; Geogram supports only 3D.");
     m.def("fill_weighted_delaunay_arrays", &fill_weighted_delaunay_arrays,
           "data"_a, "exact"_a = false,
           "Regular-triangulation (weighted Delaunay) simplices as per-dimension NumPy\n"
@@ -1084,23 +1051,27 @@ PYBIND11_MODULE(diode, m)
           "from"_a = std::vector<double> {0.,0.,0.},
           "to"_a   = std::vector<double> {1.,1.,1.},
           "with_attachment"_a = false,
-          "returns (sorted) alpha shape filtration of the input points on a periodic domain (with_attachment=True is not yet supported)");
+          "Returns (sorted) alpha shape filtration of 3D input points on a periodic\n"
+          "domain. 2D periodic input raises NotImplementedError; Geogram supports\n"
+          "only 3D. with_attachment=True is not yet supported.");
     m.def("fill_periodic_alpha_shapes_slow",  &fill_periodic_alpha_shape_slow,
           "data"_a, "exact"_a = false,
           "from"_a = std::vector<double> {0.,0.,0.},
           "to"_a   = std::vector<double> {1.,1.,1.},
           "with_attachment"_a = false,
-          "Compatibility alias of fill_periodic_alpha_shapes.");
+          "Compatibility alias of fill_periodic_alpha_shapes. 2D periodic input\n"
+          "raises NotImplementedError; Geogram supports only 3D.");
     m.def("fill_periodic_alpha_shapes_arrays", &fill_periodic_alpha_shapes_arrays,
           "data"_a, "exact"_a = false,
           "from"_a = std::vector<double> {0.,0.,0.},
           "to"_a   = std::vector<double> {1.,1.,1.},
-          "Periodic alpha shape filtration (2D or 3D) as per-dimension NumPy arrays:\n"
+          "Periodic 3D alpha shape filtration as per-dimension NumPy arrays:\n"
           "returns (verts_by_dim, vals_by_dim) where verts_by_dim[d] is an (n_d, d+1)\n"
           "int64 array of vertex ids and vals_by_dim[d] an (n_d,) float64 array of alpha\n"
           "values. Arrays form of fill_periodic_alpha_shapes; each canonical simplex is\n"
           "emitted once. Unsorted within each dimension. Raises if the cloud is not\n"
-          "representable in one sheet of the periodic covering.");
+          "representable in one sheet of the periodic covering.\n"
+          "2D periodic input raises NotImplementedError; Geogram supports only 3D.");
     m.def("fill_weighted_periodic_alpha_shapes",  &fill_weighted_periodic_alpha_shape,
           "data"_a, "exact"_a = false,
           "from"_a = std::array<double,3> {0.,0.,0.},

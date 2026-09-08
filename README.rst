@@ -24,9 +24,11 @@ Hidden weighted sites are omitted. The bundled Geogram build includes a
 correction allowing periodic insertion to continue past hidden weighted sites;
 common weight offsets are removed before triangulation to preserve precision.
 Inputs that cannot be represented as a simplicial one-sheeted covering raise
-an error. Periodic 2D still uses explicit tiling because Geogram 1.9.9 has no
-native periodic 2D backend. Ordinary attachment exporters retain the general
-implementation; periodic attachments remain unsupported.
+an error. Periodic 2D is unsupported because Geogram 1.9.9 has no native
+periodic 2D backend; Python periodic exporters raise ``NotImplementedError``
+for two-dimensional input. DioDe performs no explicit periodic tiling.
+Ordinary attachment exporters retain the general implementation; periodic
+attachments remain unsupported.
 
 These paths are shared by the list and NumPy-array alpha exporters; the
 list exporter still sorts the filtration, while arrays remain unsorted.
@@ -176,7 +178,7 @@ The result is a list of per-dimension NumPy arrays, where ``verts_by_dim[d]`` is
 an ``(n_d, d+1)`` int64 array of vertex ids (dimension 0 = vertices, 1 = edges,
 and so on). ``diode.fill_delaunay(...)`` is the equivalent list-of-tuples form.
 ``diode.fill_periodic_delaunay_arrays(...)`` / ``diode.fill_periodic_delaunay(...)``
-are the periodic counterparts (over the cube ``[from, to]``, default the unit
+are the 3D periodic counterparts (over the box ``[from, to]``, default the unit
 cube). All four take the same ``exact`` argument as the alpha-shape functions.
 
 Consumers that need periodic geometry as well as combinatorics can use

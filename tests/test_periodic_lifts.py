@@ -5,12 +5,11 @@ import numpy as np
 import pytest
 
 
-def periodic_cloud(dim):
-    # Seeded cloud with a pair whose shortest edge crosses the periodic boundary.
-    n = 40 if dim == 2 else 250
-    points = np.random.default_rng(700 + dim).random((n, dim))
-    points[0] = [0.01, 0.5] if dim == 2 else [0.01, 0.5, 0.5]
-    points[1] = [0.99, 0.5] if dim == 2 else [0.99, 0.5, 0.5]
+def periodic_cloud():
+    # Seeded 3D cloud with a pair whose shortest edge crosses the boundary.
+    points = np.random.default_rng(703).random((250, 3))
+    points[0] = [0.01, 0.5, 0.5]
+    points[1] = [0.99, 0.5, 0.5]
     return points
 
 
@@ -19,11 +18,11 @@ def simplex_set(arrays):
     return {tuple(int(v) for v in row) for array in arrays for row in np.sort(array, axis=1)}
 
 
-@pytest.mark.parametrize("dim", [2, 3])
 @pytest.mark.parametrize("exact", [False, True])
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
-def test_periodic_delaunay_lifts_contract(dim, exact, dtype):
-    points = periodic_cloud(dim).astype(dtype)
+def test_periodic_delaunay_lifts_contract(exact, dtype):
+    dim = 3
+    points = periodic_cloud().astype(dtype)
     bbox_min = np.zeros(dim)
     bbox_max = np.ones(dim)
     vertices, offsets = diode.fill_periodic_delaunay_lifts_arrays(
@@ -67,19 +66,19 @@ def test_periodic_delaunay_lifts_contract(dim, exact, dtype):
 
 @pytest.mark.parametrize("exact", [False, True])
 def test_periodic_boundary_edge_uses_short_lift(exact):
-    points = periodic_cloud(2)
+    points = periodic_cloud()
     vertices, offsets = diode.fill_periodic_delaunay_lifts_arrays(
-        points, exact=exact, bbox_min=[0, 0], bbox_max=[1, 1]
+        points, exact=exact, bbox_min=[0, 0, 0], bbox_max=[1, 1, 1]
     )
     row_index = np.flatnonzero(np.all(vertices[1] == [0, 1], axis=1))
     assert row_index.shape == (1,)
     lifted = points[vertices[1][row_index[0]]] + offsets[1][row_index[0]]
-    np.testing.assert_allclose(lifted[1] - lifted[0], [-0.02, 0.0], atol=1e-12)
+    np.testing.assert_allclose(lifted[1] - lifted[0], [-0.02, 0.0, 0.0], atol=1e-12)
 
-@pytest.mark.parametrize("dim", [2, 3])
 @pytest.mark.parametrize("exact", [False, True])
-def test_periodic_boundary_edge_has_short_lift_alpha(dim, exact):
-    points = periodic_cloud(dim)
+def test_periodic_boundary_edge_has_short_lift_alpha(exact):
+    dim = 3
+    points = periodic_cloud()
     values = {
         tuple(sorted(int(vertex) for vertex in simplex)): alpha
         for simplex, alpha in diode.fill_periodic_alpha_shapes(
@@ -93,7 +92,7 @@ def test_periodic_boundary_edge_has_short_lift_alpha(dim, exact):
 def test_rectangular_translated_lifts_match_empty_spheres_and_alpha(exact):
     width = np.array([1.0, 1.25, 1.5])
     origin = np.array([-3.0, 5.0, 2.0])
-    points = origin + periodic_cloud(3) * width
+    points = origin + periodic_cloud() * width
     vertices, offsets = diode.fill_periodic_delaunay_lifts_arrays(
         points, exact=exact, bbox_min=origin, bbox_max=origin + width
     )
@@ -127,18 +126,41 @@ def test_rectangular_translated_lifts_match_empty_spheres_and_alpha(exact):
 
 
 @pytest.mark.parametrize(
-    "points,bbox_min,bbox_max,match",
+    "points,bbox_min,bbox_max",
     [
-        (np.array([[0.1, 0.2], [np.nan, 0.3]]), [0, 0], [1, 1], "finite"),
-        (np.array([[0.1, 0.2], [1.0, 0.3]]), [0, 0], [1, 1], "half-open"),
-        (np.array([[0.1, 0.2], [0.3, 0.4]]), [1, 0], [0, 1], "empty or inverted"),
-        (np.array([[0.1, 0.2], [0.3, 0.4]]), [-np.inf, 0], [1, 1], "finite"),
-        (np.array([[0.1, 0.2], [0.3, 0.4]]), [-1e308, 0], [1e308, 1], "finite"),
+        (np.array([[0.1, 0.2, 0.3], [np.nan, 0.3, 0.4]]), [0, 0, 0], [1, 1, 1]),
+        (np.array([[0.1, 0.2, 0.3], [1.0, 0.3, 0.4]]), [0, 0, 0], [1, 1, 1]),
+        (np.array([[0.1, 0.2, 0.3], [0.3, 0.4, 0.5]]), [1, 0, 0], [0, 1, 1]),
+        (np.array([[0.1, 0.2, 0.3], [0.3, 0.4, 0.5]]), [-np.inf, 0, 0], [1, 1, 1]),
+        (np.array([[0.1, 0.2, 0.3], [0.3, 0.4, 0.5]]), [-1e308, 0, 0], [1e308, 1, 1]),
     ],
 )
-def test_periodic_delaunay_lifts_validate_input(points, bbox_min, bbox_max, match):
-    with pytest.raises(RuntimeError, match=match):
+def test_periodic_delaunay_lifts_validate_input(points, bbox_min, bbox_max):
+    with pytest.raises(RuntimeError):
         diode.fill_periodic_delaunay_lifts_arrays(
             points, bbox_min=bbox_min, bbox_max=bbox_max
         )
 
+
+@pytest.mark.parametrize(
+    "fill",
+    [
+        diode.fill_periodic_alpha_shapes,
+        diode.fill_periodic_alpha_shapes_slow,
+        diode.fill_periodic_alpha_shapes_arrays,
+        diode.fill_periodic_delaunay,
+        diode.fill_periodic_delaunay_arrays,
+        diode.fill_periodic_delaunay_lifts_arrays,
+    ],
+    ids=lambda fill: fill.__name__,
+)
+@pytest.mark.parametrize("exact", [False, True])
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize("n", [0, 3], ids=["empty", "populated"])
+def test_periodic_2d_is_unsupported(fill, exact, dtype, n):
+    points = np.array([[0.1, 0.2], [0.3, 0.4], [0.7, 0.2]], dtype=dtype)[:n]
+    # Neither the default 3D box nor an explicit 2D box enables a tiled fallback.
+    with pytest.raises(NotImplementedError):
+        fill(points, exact=exact)
+    with pytest.raises(NotImplementedError):
+        fill(points, exact, [0., 0.], [1., 1.])

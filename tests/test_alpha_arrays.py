@@ -75,18 +75,16 @@ def test_weighted_alpha_arrays_degenerate_matches_list():
     assert arrays == listed
 
 
-# ---- unweighted periodic (2D and 3D) ---------------------------------------
-# The cloud must be representable in one sheet of the periodic covering; both
-# forms raise "Cannot convert to 1-sheeted covering" otherwise (3D needs more
-# points than 2D). Compare only when the list form succeeds.
-PERIODIC_SIZES = {2: [20, 100, 500], 3: [200, 800]}
+# ---- unweighted periodic (3D) ----------------------------------------------
+# Compare only when the cloud is representable in one periodic sheet.
+PERIODIC_SIZES = [200, 800]
 
 
-@pytest.mark.parametrize("dim", [2, 3])
 @pytest.mark.parametrize("exact", EXACTS)
-def test_periodic_alpha_arrays_match_list(dim, exact):
+def test_periodic_alpha_arrays_match_list(exact):
+    dim = 3
     frm, to = [0.0] * dim, [1.0] * dim
-    for n in PERIODIC_SIZES[dim]:
+    for n in PERIODIC_SIZES:
         rng = np.random.default_rng(9000 * n + 10 * dim + int(exact))
         pts = rng.random((n, dim))
         try:
@@ -118,7 +116,7 @@ def test_weighted_periodic_alpha_arrays_match_list(n, exact):
     assert_maps_match(arrays, listed, exact=exact)
 
 
-# ---- shared: dtype dispatch, domain validation, presence -------------------
+# ---- shared: dtype dispatch and domain validation --------------------------
 def test_arrays_float32_input_gives_float64_values():
     rng = np.random.default_rng(123)
     data = np.hstack([rng.random((300, 3)), rng.random((300, 1)) * 0.05]).astype(np.float32)
@@ -133,10 +131,10 @@ def test_weighted_arrays_reject_non_4_column():
         diode.fill_weighted_alpha_shapes_arrays(pts)
 
 
-@pytest.mark.parametrize("frm,to", [([1., 1.], [0., 0.]),   # inverted
-                                    ([0.], [1., 1.])])       # too few entries
+@pytest.mark.parametrize("frm,to", [([1., 1., 1.], [0., 0., 0.]),  # inverted
+                                    ([0.], [1., 1., 1.])])        # too few entries
 def test_periodic_arrays_bad_domain_raises(frm, to):
-    pts = np.random.default_rng(1).random((100, 2))
+    pts = np.random.default_rng(1).random((100, 3))
     with pytest.raises(RuntimeError):
         diode.fill_periodic_alpha_shapes_arrays(pts, False, frm, to)
 
@@ -148,10 +146,3 @@ def test_weighted_periodic_arrays_bad_domain_raises(frm, to):
     data = np.hstack([rng.random((100, 3)), rng.random((100, 1)) * 0.01])
     with pytest.raises(RuntimeError):
         diode.fill_weighted_periodic_alpha_shapes_arrays(data, False, frm, to)
-
-
-def test_alpha_arrays_functions_exist():
-    for name in ("fill_weighted_alpha_shapes_arrays",
-                 "fill_periodic_alpha_shapes_arrays",
-                 "fill_weighted_periodic_alpha_shapes_arrays"):
-        assert hasattr(diode, name)

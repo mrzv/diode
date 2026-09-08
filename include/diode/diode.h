@@ -110,57 +110,31 @@ struct AlphaShapes
 
 // `exact` is retained for API compatibility. Geogram's triangulations use
 // robust exact predicates and double-precision constructions.
+// Only ordinary 2D triangulations are supported; Geogram's native periodic
+// triangulations are 3D-only.
 template<bool exact, class Points, class SimplexCallback>
 void fill_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex);
 
-// Faster equivalent of fill_alpha_shapes2d: Delaunay_triangulation_2 with the
-// input index in vertex info (O(1) lookup) and the face circumradius cached in
-// face info, instead of a std::set<Simplex2D> with per-edge recomputation.
-// Produces the same (simplex, alpha) set. Simplices are emitted unsorted.
+// Geogram-backed ordinary 2D alpha complex. fill_alpha_shapes2d delegates to
+// this implementation. Simplices are emitted unsorted.
 template<bool exact, class Points, class SimplexCallback>
 void fill_alpha_shapes2d_direct(const Points& points, const SimplexCallback& add_simplex);
 
 template<bool exact, class Points, class SimplexCallback>
 void fill_alpha_shapes2d_with_attachment(const Points& points, const SimplexCallback& add_simplex);
 
-// Faster equivalent of fill_alpha_shapes2d_with_attachment, built on the 2D
-// Delaunay-direct path. Same attacher contract. Simplices emitted unsorted.
+// Ordinary 2D alpha complex with the same attacher contract as the 3D path.
+// fill_alpha_shapes2d_with_attachment delegates here. Simplices emitted unsorted.
 template<bool exact, class Points, class SimplexCallback>
 void fill_alpha_shapes2d_direct_with_attachment(const Points& points, const SimplexCallback& add_simplex);
 
-template<bool exact, class Points, class SimplexCallback>
-void fill_periodic_alpha_shapes2d(const Points& points, const SimplexCallback& add_simplex,
-                                std::array<double, 2> from, std::array<double, 2> to);
-
-// Faster equivalent of fill_periodic_alpha_shapes2d: same periodic geometry and
-// Gabriel test, but caches face circumradii in a hash map keyed by vertex set
-// (first-wins, matching the std::set dedup) instead of a std::set with per-edge
-// recomputation. Produces the same (simplex, alpha) set. Emitted unsorted.
-template<bool exact, class Points, class SimplexCallback>
-void fill_periodic_alpha_shapes2d_direct(const Points& points, const SimplexCallback& add_simplex,
-                                std::array<double, 2> from, std::array<double, 2> to);
-
-// Combinatorics-only export (2D, unweighted): builds the same
-// Delaunay_triangulation_2 as fill_alpha_shapes2d_direct (vertex index in vertex
-// info) and emits every finite simplex (faces, edges, vertices) by vertex index,
-// WITHOUT computing any alpha value. Same simplex set as fill_alpha_shapes2d.
+// Combinatorics-only export (2D, unweighted): builds the same ordinary Geogram
+// Delaunay triangulation as fill_alpha_shapes2d_direct and emits every finite
+// simplex (faces, edges, vertices) by vertex index, WITHOUT computing alpha
+// values. Same simplex set as fill_alpha_shapes2d.
 // Callback: add_simplex(vertices). Simplices emitted unsorted.
 template<bool exact, class Points, class SimplexCallback>
 void fill_delaunay2d(const Points& points, const SimplexCallback& add_simplex);
-
-// Combinatorics-only export (2D, unweighted, periodic): like fill_delaunay2d but
-// on a Periodic_2_Delaunay_triangulation_2 over [from, to]. Each canonical simplex
-// is emitted once (deduplicated by vertex-index set). No alpha values.
-// Callback: add_simplex(vertices).
-template<bool exact, class Points, class SimplexCallback>
-void fill_periodic_delaunay2d(const Points& points, const SimplexCallback& add_simplex,
-                                std::array<double, 2> from, std::array<double, 2> to);
-
-// Offset-aware counterpart of fill_periodic_delaunay2d. Vertex ids are sorted
-// and aligned offsets are normalized by a common lattice translation.
-template<bool exact, class Points, class SimplexCallback>
-void fill_periodic_delaunay2d_lifts(const Points& points, const SimplexCallback& add_simplex,
-                                std::array<double, 2> from, std::array<double, 2> to);
 
 
 
