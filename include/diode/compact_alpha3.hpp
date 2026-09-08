@@ -173,7 +173,9 @@ bool try_compact_alpha3(const Points& points,const CB& cb,bool weighted) {
     {
         std::lock_guard<std::mutex> lock(geogram_triangulation_mutex());
         GEO::Numeric::random_reset();
-        triangulation=GEO::Delaunay::create(weighted?4:3,weighted?"BPOW":"PDEL");
+        triangulation=weighted
+            ? GEO::Delaunay::create(4,"BPOW")
+            : static_cast<GEO::Delaunay*>(new GEO::Delaunay3d(3));
         if(triangulation.is_null()) throw std::runtime_error("Geogram alpha backend unavailable");
         triangulation->set_reorder(true);
         triangulation->set_vertices(static_cast<GEO::index_t>(count),coordinates.data());

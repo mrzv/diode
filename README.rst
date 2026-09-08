@@ -9,7 +9,8 @@ Dionysus_ understands. Geogram is fetched and built automatically by CMake.
 
 The plain 3D ordinary and weighted alpha exporters use compact cell/edge
 storage and assign filtration values from tetrahedra down to vertices.
-Ordinary triangulations use Geogram's PDEL backend; weighted triangulations
+Ordinary triangulations use Geogram's serial ``Delaunay3d`` backend to avoid
+PDEL dropping unfinished insertions between BRIO levels. Weighted triangulations
 use BPOW, with hidden sites omitted. BRIO-Hilbert reordering remains enabled.
 Weighted tetrahedral power centers are computed from the original linear
 equations rather than a Gram system.
